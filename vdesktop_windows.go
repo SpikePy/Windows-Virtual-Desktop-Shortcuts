@@ -207,7 +207,7 @@ func (sw *desktopSwitcher) desktopAt(managerInternal unsafe.Pointer, zeroBasedIn
 // acted and moved focus elsewhere, so re-querying it here would risk
 // checking/restoring the wrong window.
 func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) error {
-	debugLogf("switchTo(%d): hwndBefore=0x%X iconicNow=%v", zeroBasedIndex, hwndBefore, hwndBefore != 0 && isMinimized(hwndBefore))
+	debugLogf("switchTo(%d): captured %s", zeroBasedIndex, describeWindow(hwndBefore))
 
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
@@ -269,14 +269,15 @@ func pollRestoreIfMinimized(hwnd uintptr) {
 		time.Sleep(d)
 		elapsed += d
 		minimized := isMinimized(hwnd)
-		debugLogf("pollRestoreIfMinimized: check %d at +%v, minimized=%v", i, elapsed, minimized)
+		debugLogf("pollRestoreIfMinimized: check %d at +%v: %s | currentForeground: %s",
+			i, elapsed, describeWindow(hwnd), describeWindow(getForegroundWindow()))
 		if minimized {
 			restoreWindow(hwnd)
-			debugLogf("pollRestoreIfMinimized: restored hwnd=0x%X, now minimized=%v", hwnd, isMinimized(hwnd))
+			debugLogf("pollRestoreIfMinimized: restored -> %s", describeWindow(hwnd))
 			return
 		}
 	}
-	debugLogf("pollRestoreIfMinimized: gave up after %d checks (%v total), never saw hwnd=0x%X minimized", len(sleeps), elapsed, hwnd)
+	debugLogf("pollRestoreIfMinimized: gave up after %d checks (%v total), never saw it minimized: %s", len(sleeps), elapsed, describeWindow(hwnd))
 }
 
 // queryViewCollection fetches IApplicationViewCollection through the

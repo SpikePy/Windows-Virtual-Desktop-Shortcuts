@@ -147,7 +147,7 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 				if isKeyDown(vkShift) {
 					req.action = actionMoveWindowToDesktop
 				}
-				debugLogf("hook: digit %d -> request %+v", kb.VkCode-vk1+1, req)
+				debugLogf("hook: digit %d, action=%d, captured %s", kb.VkCode-vk1+1, req.action, describeWindow(req.hwndForeground))
 				select {
 				case h.requests <- req:
 				default:

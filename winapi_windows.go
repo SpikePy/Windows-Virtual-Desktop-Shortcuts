@@ -27,6 +27,12 @@ var (
 	procSendInput           = modUser32.NewProc("SendInput")
 	procIsIconic            = modUser32.NewProc("IsIconic")
 	procShowWindow          = modUser32.NewProc("ShowWindow")
+	procIsWindow            = modUser32.NewProc("IsWindow")
+	procIsWindowVisible     = modUser32.NewProc("IsWindowVisible")
+	procGetClassNameW       = modUser32.NewProc("GetClassNameW")
+	procGetWindowTextW      = modUser32.NewProc("GetWindowTextW")
+	procGetWindowThreadPID  = modUser32.NewProc("GetWindowThreadProcessId")
+	procGetAncestor         = modUser32.NewProc("GetAncestor")
 
 	procRegisterClassExW = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW  = modUser32.NewProc("CreateWindowExW")
@@ -292,4 +298,30 @@ func isMinimized(hwnd uintptr) bool {
 
 func restoreWindow(hwnd uintptr) {
 	procShowWindow.Call(hwnd, uintptr(swRestore))
+}
+
+const gaRoot = 2
+
+// describeWindow formats diagnostic info about hwnd for debugLogf: whether
+// it still exists, its class name and title, visibility/iconic state, and
+// its root ancestor (in case hwnd is a child/owned window rather than the
+// true top-level window Explorer associates with a taskbar button).
+func describeWindow(hwnd uintptr) string {
+	if hwnd == 0 {
+		return "hwnd=0x0"
+	}
+	existsR, _, _ := procIsWindow.Call(hwnd)
+	visibleR, _, _ := procIsWindowVisible.Call(hwnd)
+	root, _, _ := procGetAncestor.Call(hwnd, uintptr(gaRoot))
+
+	classBuf := make([]uint16, 256)
+	classN, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&classBuf[0])), uintptr(len(classBuf)))
+	titleBuf := make([]uint16, 256)
+	titleN, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&titleBuf[0])), uintptr(len(titleBuf)))
+
+	return fmt.Sprintf(
+		"hwnd=0x%X exists=%v visible=%v iconic=%v root=0x%X class=%q title=%q",
+		hwnd, existsR != 0, visibleR != 0, isMinimized(hwnd), root,
+		syscall.UTF16ToString(classBuf[:classN]), syscall.UTF16ToString(titleBuf[:titleN]),
+	)
 }
