@@ -92,11 +92,14 @@ type desktopRequest struct {
 	index  int // 0-based
 
 	// hwndForeground is the foreground window HWND as observed at the
-	// moment of the keypress, captured synchronously in the hook itself
-	// (see hook_windows.go) rather than re-queried later here -- by the
-	// time this request reaches the switcher goroutine, Explorer may
-	// already have reacted (see switchTo's doc comment) and moved focus
-	// elsewhere, making a late GetForegroundWindow() call unreliable.
+	// instant Win itself first went down (see winKeyDownForeground in
+	// hook_windows.go), captured synchronously in the hook rather than
+	// re-queried later here. Both matter: by the time this request
+	// reaches the switcher goroutine, Explorer may already have reacted
+	// and moved focus elsewhere; and capturing any later than Win's own
+	// key-down (e.g. at the digit's key-down) risks landing in the brief
+	// window where the foreground window is transiently Explorer's
+	// desktop rather than the real app, grabbing the wrong HWND entirely.
 	hwndForeground uintptr
 }
 
