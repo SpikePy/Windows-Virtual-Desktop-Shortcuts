@@ -224,6 +224,7 @@ func (app *trayApp) removeTrayIcon() {
 func (app *trayApp) showMenu() {
 	hMenuR, _, _ := procCreatePopupMenu.Call()
 	if hMenuR == 0 {
+		debugLogf("CreatePopupMenu failed")
 		return
 	}
 	hMenu := windows.Handle(hMenuR)
@@ -248,15 +249,17 @@ func (app *trayApp) showMenu() {
 	// Required so the menu closes correctly when the user clicks away from
 	// it; see the Win32 docs for Shell_NotifyIcon / TrackPopupMenu.
 	procSetForegroundWnd.Call(uintptr(app.hwnd))
-	procTrackPopupMenu.Call(
+	r0, _, _ := procTrackPopupMenu.Call(
 		uintptr(hMenu),
 		uintptr(tpmRightButton),
 		uintptr(pt.X),
 		uintptr(pt.Y),
-		0,
 		uintptr(app.hwnd),
 		0,
 	)
+	if r0 == 0 {
+		debugLogf("TrackPopupMenuEx failed")
+	}
 	procPostMessageW.Call(uintptr(app.hwnd), 0, 0, 0)
 }
 
