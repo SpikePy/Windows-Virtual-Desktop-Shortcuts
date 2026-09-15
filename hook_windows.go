@@ -24,6 +24,10 @@ type keyboardHook struct {
 	handle   windows.Handle
 	requests chan<- desktopRequest
 	callback uintptr
+
+	// comboSinceWinDown records that a Win+<digit> shortcut was handled
+	// during the current Win hold, so its release can be logged.
+	comboSinceWinDown bool
 }
 
 func newKeyboardHook(requests chan<- desktopRequest) *keyboardHook {
@@ -63,6 +67,10 @@ func isKeyDown(vk int) bool {
 	return r0&0x8000 != 0
 }
 
+func winKeyHeld() bool {
+	return isKeyDown(vkLWin) || isKeyDown(vkRWin)
+}
+
 // lowLevelKeyboardProc is the WH_KEYBOARD_LL hook procedure. It must return
 // quickly: it only classifies the keystroke and, if it is a plain
 // Win+<digit> or Win+Shift+<digit> combination, hands the request off to
@@ -77,13 +85,16 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 	}
 	kb := (*kbdllhookstruct)(unsafe.Pointer(lParam))
 
+	if isUp && (kb.VkCode == vkLWin || kb.VkCode == vkRWin) && h.comboSinceWinDown {
+		h.comboSinceWinDown = false
+		debugLogf("hook: Win released")
+	}
 	if !hotkeysEnabled.Load() || kb.VkCode < vk1 || kb.VkCode > vk9 {
 		return h.callNext(nCode, wParam, lParam)
 	}
-	winDown := isKeyDown(vkLWin) || isKeyDown(vkRWin)
 	// Ctrl and Alt are left alone so other Win+Ctrl/Win+Alt combinations
 	// keep working; Shift toggles switch vs. move.
-	if !winDown || isKeyDown(vkControl) || isKeyDown(vkMenu) {
+	if !winKeyHeld() || isKeyDown(vkControl) || isKeyDown(vkMenu) {
 		return h.callNext(nCode, wParam, lParam)
 	}
 
@@ -95,11 +106,14 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 		if isKeyDown(vkShift) {
 			req.action = actionMoveWindowToDesktop
 		}
+		debugLogf("hook: Win+%d (action %d)", req.index+1, req.action)
+		h.comboSinceWinDown = true
 		select {
 		case h.requests <- req:
 		default:
 			// Switcher is busy; drop the request rather than blocking
 			// this hook callback.
+			debugLogf("hook: switcher busy, dropped Win+%d", req.index+1)
 		}
 		// With the digit swallowed, Windows would see Win pressed and
 		// released on its own and open the Start menu. Tapping an

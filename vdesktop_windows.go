@@ -85,12 +85,14 @@ type desktopSwitcher struct {
 	requests <-chan desktopRequest
 }
 
-// After switching, switchTo keeps checking for switchCheckWindow that the
-// view is still on the target desktop, and switches again (at most
+// After switching, switchTo keeps checking that the view is still on the
+// target desktop while Win is held and for switchCheckWindow after it's
+// released (at most maxSwitchCheck in total), and switches again (at most
 // maxSwitchRetries times) if it isn't. See switchTo for why.
 const (
 	switchCheckWindow   = 750 * time.Millisecond
 	switchCheckInterval = 50 * time.Millisecond
+	maxSwitchCheck      = 5 * time.Second
 	maxSwitchRetries    = 3
 )
 
@@ -223,10 +225,11 @@ func currentDesktopID(managerInternal unsafe.Pointer) (windows.GUID, error) {
 // such desktop exists, it does nothing (returns nil).
 //
 // When the app pinned at taskbar position N is focused, Explorer can still
-// react to Win+N by reactivating that app right after the switch, which
-// pulls the view straight back to the app's desktop. So for a short while
-// after switching, this checks the current desktop and switches again if
-// the view has left the target.
+// react to Win+N by reactivating that app after the switch -- possibly
+// only once Win is released -- which pulls the view back to the app's
+// desktop. So until shortly after Win is released, this checks the
+// current desktop and switches again if the view has left the target.
+// Each step is logged to the debug output.
 func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
@@ -249,11 +252,17 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	}
 	defer comRelease(desktop)
 
+	n := zeroBasedIndex + 1
 	targetID, err := desktopID(desktop)
 	if err != nil {
 		return err
 	}
-	if current, err := currentDesktopID(managerInternal); err == nil && current == targetID {
+	startID, err := currentDesktopID(managerInternal)
+	if err != nil {
+		return err
+	}
+	debugLogf("switchTo(%d): on %s, target %s", n, shortID(startID), shortID(targetID))
+	if startID == targetID {
 		return nil
 	}
 
@@ -262,28 +271,45 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
 	}
 
+	start := time.Now()
+	checkUntil := start.Add(switchCheckWindow)
+	lastSeen := startID
 	retries := 0
-	for waited := time.Duration(0); waited < switchCheckWindow && len(sw.requests) == 0; waited += switchCheckInterval {
+	for time.Now().Before(checkUntil) && time.Since(start) < maxSwitchCheck && len(sw.requests) == 0 {
 		time.Sleep(switchCheckInterval)
+		winHeld := winKeyHeld()
+		if winHeld {
+			checkUntil = time.Now().Add(switchCheckWindow)
+		}
 		current, err := currentDesktopID(managerInternal)
 		if err != nil {
 			return err
+		}
+		if current != lastSeen {
+			debugLogf("switchTo(%d): +%v now on %s (Win held: %v)", n, time.Since(start).Round(time.Millisecond), shortID(current), winHeld)
+			lastSeen = current
 		}
 		if current == targetID {
 			continue
 		}
 		if retries == maxSwitchRetries {
-			return fmt.Errorf("view kept leaving desktop %d after %d re-switches", zeroBasedIndex+1, retries)
+			return fmt.Errorf("view kept leaving desktop %d after %d re-switches", n, retries)
 		}
 		retries++
-		debugLogf("switchTo(%d): view left the target desktop %v after switching, switching again (%d/%d)",
-			zeroBasedIndex+1, waited+switchCheckInterval, retries, maxSwitchRetries)
+		debugLogf("switchTo(%d): switching again (%d/%d)", n, retries, maxSwitchRetries)
 		hr := comCall(managerInternal, slotManagerInternalSwitchDesktop, uintptr(desktop))
 		if hrFailed(hr) {
 			return fmt.Errorf("switch_desktop (retry %d): hr=0x%08X", retries, uint32(hr))
 		}
 	}
+	debugLogf("switchTo(%d): stopped checking after %v on %s, %d re-switches",
+		n, time.Since(start).Round(time.Millisecond), shortID(lastSeen), retries)
 	return nil
+}
+
+// shortID abbreviates a desktop GUID for log output.
+func shortID(id windows.GUID) string {
+	return fmt.Sprintf("%08X", id.Data1)
 }
 
 // queryViewCollection fetches IApplicationViewCollection through the
