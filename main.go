@@ -1,6 +1,6 @@
 //go:build windows
 
-// Command vdesktop-switcher lets you jump directly to the Nth Windows
+// Command VirtualDesktopShortcuts lets you jump directly to the Nth Windows
 // virtual desktop with Win+1 through Win+9, the way Win+1..9 already jumps
 // to the Nth pinned taskbar app.
 //

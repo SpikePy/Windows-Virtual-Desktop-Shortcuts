@@ -39,7 +39,7 @@ modifiers held, so combinations like Ctrl+Win+3 are left alone.
 Requires Go 1.23+. From the repo root:
 
 ```sh
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-H=windowsgui" -o vdesktop-switcher.exe .
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-H=windowsgui" -o VirtualDesktopShortcuts.exe .
 ```
 
 (`-H=windowsgui` prevents a console window from flashing on startup; it's
@@ -48,7 +48,7 @@ compiles cleanly from Linux/macOS as well as natively on Windows.
 
 ## Running
 
-You can just run `vdesktop-switcher.exe` directly — copy it wherever you
+You can just run `VirtualDesktopShortcuts.exe` directly — copy it wherever you
 like and optionally add a shortcut to your Startup folder (`shell:startup`)
 if you want it to launch automatically when you sign in. Or use
 `Setup_VirtualDesktopShortcuts.exe` (below) to do that for you.
@@ -88,9 +88,9 @@ task, to keep the tool updated): neither action ever creates duplicates.
   against the installed one — if they match, it skips reinstalling
   entirely.
 - **No duplicate processes**: before writing a new build over the old one,
-  install/update stops every running `vdesktop-switcher.exe` process by
-  name; afterwards it makes sure exactly one instance is running, starting
-  it if it wasn't. Uninstall stops every running instance too.
+  install/update stops every running `VirtualDesktopShortcuts.exe` process
+  by name; afterwards it makes sure exactly one instance is running,
+  starting it if it wasn't. Uninstall stops every running instance too.
 
 For scripting/automation, `--install` and `--uninstall` flags skip the
 prompt and run that action directly (e.g. `Setup_VirtualDesktopShortcuts.exe --install`).
@@ -105,10 +105,9 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o Setup_VirtualDesktopShortcut
 
 Pushing a tag matching `v*` (e.g. `v1.0.0`) triggers
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which
-cross-compiles both `vdesktop-switcher.exe` and
-`Setup_VirtualDesktopShortcuts.exe`, uploads them as workflow artifacts,
-and attaches them (the app zipped, the setup tool as a plain `.exe`) to a
-GitHub Release for that tag.
+cross-compiles both `VirtualDesktopShortcuts.exe` and
+`Setup_VirtualDesktopShortcuts.exe` and attaches both plain `.exe` files
+(no zip) as workflow artifacts and to a GitHub Release for that tag.
 
 ```sh
 git tag v1.0.0

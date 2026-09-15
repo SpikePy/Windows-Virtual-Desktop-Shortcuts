@@ -1,8 +1,8 @@
 //go:build windows
 
 // Command Setup_VirtualDesktopShortcuts is the combined installer/
-// uninstaller for vdesktop-switcher (see the repo root). Run it and it
-// asks whether to install/update or uninstall the tool.
+// uninstaller for VirtualDesktopShortcuts.exe (see the repo root). Run it
+// and it asks whether to install/update or uninstall the tool.
 //
 // Both actions are safe to run repeatedly and never leave duplicates
 // behind:
@@ -16,9 +16,7 @@
 package main
 
 import (
-	"archive/zip"
 	"bufio"
-	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -39,7 +37,7 @@ import (
 const (
 	githubOwner   = "SpikePy"
 	githubRepo    = "Windows-Virtual-Desktop-Shortcuts"
-	targetExeName = "vdesktop-switcher.exe"
+	targetExeName = "VirtualDesktopShortcuts.exe"
 	userAgent     = "Setup_VirtualDesktopShortcuts"
 	appTitle      = "Virtual Desktop Shortcuts - Setup"
 )
@@ -135,7 +133,7 @@ func installOrUpdate() error {
 	fmt.Printf("Latest release: %s (%s)\n", rel.TagName, asset.Name)
 
 	fmt.Println("Downloading", asset.Name, "...")
-	exeBytes, err := downloadAndExtractExe(asset.BrowserDownloadURL)
+	exeBytes, err := downloadExe(asset.BrowserDownloadURL)
 	if err != nil {
 		return fmt.Errorf("download release asset: %w", err)
 	}
@@ -230,18 +228,22 @@ func fetchLatestRelease() (*release, error) {
 	return &rel, nil
 }
 
+// findWindowsAsset looks for the exact release asset for the app itself
+// (an exact, case-insensitive name match on targetExeName). It's important
+// this is an exact match and not a substring/prefix check: the release
+// also carries Setup_VirtualDesktopShortcuts.exe, whose name contains
+// "VirtualDesktopShortcuts.exe" as a substring too.
 func findWindowsAsset(rel *release) *releaseAsset {
 	for i := range rel.Assets {
 		a := &rel.Assets[i]
-		lower := strings.ToLower(a.Name)
-		if strings.Contains(lower, "windows-amd64") && strings.HasSuffix(lower, ".zip") {
+		if strings.EqualFold(a.Name, targetExeName) {
 			return a
 		}
 	}
 	return nil
 }
 
-func downloadAndExtractExe(url string) ([]byte, error) {
+func downloadExe(url string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -263,22 +265,7 @@ func downloadAndExtractExe(url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read download: %w", err)
 	}
-
-	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
-	if err != nil {
-		return nil, fmt.Errorf("open zip: %w", err)
-	}
-	for _, f := range zr.File {
-		if strings.EqualFold(filepath.Base(f.Name), targetExeName) {
-			rc, err := f.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer rc.Close()
-			return io.ReadAll(rc)
-		}
-	}
-	return nil, fmt.Errorf("%s not found inside %s", targetExeName, filepath.Base(url))
+	return body, nil
 }
 
 func startupFolder() (string, error) {
