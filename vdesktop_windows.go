@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -52,8 +53,11 @@ const (
 
 	slotManagerInternalGetDesktopCount   = 3
 	slotManagerInternalMoveViewToDesktop = 4
+	slotManagerInternalGetCurrentDesktop = 6
 	slotManagerInternalGetDesktops       = 7
 	slotManagerInternalSwitchDesktop     = 9
+
+	slotVirtualDesktopGetID = 4
 
 	slotObjectArrayGetCount = 3
 	slotObjectArrayGetAt    = 4
@@ -76,7 +80,19 @@ func guid(s string) *windows.GUID {
 type desktopSwitcher struct {
 	iidManagerInternal *windows.GUID
 	iidVirtualDesktop  *windows.GUID
+	// requests lets switchTo stop re-checking a switch as soon as a newer
+	// request is waiting.
+	requests <-chan desktopRequest
 }
+
+// After switching, switchTo keeps checking for switchCheckWindow that the
+// view is still on the target desktop, and switches again (at most
+// maxSwitchRetries times) if it isn't. See switchTo for why.
+const (
+	switchCheckWindow   = 750 * time.Millisecond
+	switchCheckInterval = 50 * time.Millisecond
+	maxSwitchRetries    = 3
+)
 
 // desktopAction identifies what a hotkey-triggered request should do.
 type desktopAction int
@@ -108,6 +124,7 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 	sw := &desktopSwitcher{
 		iidManagerInternal: iidVirtualDesktopManagerInternalWin10,
 		iidVirtualDesktop:  iidVirtualDesktopWin10,
+		requests:           requests,
 	}
 	if ver.BuildNumber >= 22000 {
 		sw.iidManagerInternal = iidVirtualDesktopManagerInternalWin11
@@ -181,8 +198,35 @@ func (sw *desktopSwitcher) desktopAt(managerInternal unsafe.Pointer, zeroBasedIn
 	return desktop, nil
 }
 
+// desktopID returns the GUID identifying an IVirtualDesktop.
+func desktopID(desktop unsafe.Pointer) (windows.GUID, error) {
+	var id windows.GUID
+	hr := comCall(desktop, slotVirtualDesktopGetID, uintptr(unsafe.Pointer(&id)))
+	if hrFailed(hr) {
+		return windows.GUID{}, fmt.Errorf("IVirtualDesktop::GetID: hr=0x%08X", uint32(hr))
+	}
+	return id, nil
+}
+
+// currentDesktopID returns the GUID of the desktop currently shown.
+func currentDesktopID(managerInternal unsafe.Pointer) (windows.GUID, error) {
+	var desktop unsafe.Pointer
+	hr := comCall(managerInternal, slotManagerInternalGetCurrentDesktop, uintptr(unsafe.Pointer(&desktop)))
+	if hrFailed(hr) || desktop == nil {
+		return windows.GUID{}, fmt.Errorf("get_current_desktop: hr=0x%08X", uint32(hr))
+	}
+	defer comRelease(desktop)
+	return desktopID(desktop)
+}
+
 // switchTo switches to the desktop at the given zero-based index. If no
 // such desktop exists, it does nothing (returns nil).
+//
+// When the app pinned at taskbar position N is focused, Explorer can still
+// react to Win+N by reactivating that app right after the switch, which
+// pulls the view straight back to the app's desktop. So for a short while
+// after switching, this checks the current desktop and switches again if
+// the view has left the target.
 func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
@@ -205,9 +249,39 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	}
 	defer comRelease(desktop)
 
+	targetID, err := desktopID(desktop)
+	if err != nil {
+		return err
+	}
+	if current, err := currentDesktopID(managerInternal); err == nil && current == targetID {
+		return nil
+	}
+
 	hr := comCall(managerInternal, slotManagerInternalSwitchDesktop, uintptr(desktop))
 	if hrFailed(hr) {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
+	}
+
+	retries := 0
+	for waited := time.Duration(0); waited < switchCheckWindow && len(sw.requests) == 0; waited += switchCheckInterval {
+		time.Sleep(switchCheckInterval)
+		current, err := currentDesktopID(managerInternal)
+		if err != nil {
+			return err
+		}
+		if current == targetID {
+			continue
+		}
+		if retries == maxSwitchRetries {
+			return fmt.Errorf("view kept leaving desktop %d after %d re-switches", zeroBasedIndex+1, retries)
+		}
+		retries++
+		debugLogf("switchTo(%d): view left the target desktop %v after switching, switching again (%d/%d)",
+			zeroBasedIndex+1, waited+switchCheckInterval, retries, maxSwitchRetries)
+		hr := comCall(managerInternal, slotManagerInternalSwitchDesktop, uintptr(desktop))
+		if hrFailed(hr) {
+			return fmt.Errorf("switch_desktop (retry %d): hr=0x%08X", retries, uint32(hr))
+		}
 	}
 	return nil
 }
