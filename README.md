@@ -19,19 +19,24 @@ If the desktop doesn't exist (e.g. you press `Win+5` or `Win+Shift+5` but
 only have 3 desktops), the shortcut is a no-op — it does not create a new
 desktop, and moving with no window focused is also a no-op.
 
-**One-time setup:** Explorer has its own Win+1..9 shortcuts for pinned
-taskbar apps, and this app can't fully override them (see
-[below](#how-it-works-and-why-its-fragile)). Turn them off once, then
-restart Explorer or sign out and back in:
+**Explorer's own Win+1..9 shortcuts:** Explorer uses Win+1..9 to open
+pinned taskbar apps, and this app can't fully override that (see
+[below](#how-it-works-and-why-its-fragile)): without turning it off, Win+N
+minimizes the focused app instead of switching when that app is pinned at
+taskbar position N. `Setup_VirtualDesktopShortcuts.exe` turns it off when
+installing (by adding `123456789` to Explorer's `DisabledHotkeys` registry
+value) and back on when uninstalling, restarting Explorer whenever the
+value changes. While it's off, Win+1..9 doesn't open pinned taskbar apps,
+even if this app is disabled or not running.
+
+If you don't use the Setup tool, set it by hand, then restart Explorer or
+sign out and back in:
 
 ```
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisabledHotkeys /t REG_SZ /d 123456789 /f
 ```
 
-Without this, Win+N minimizes the focused app instead of switching when
-that app is pinned at taskbar position N. With it, Win+1..9 no longer
-opens pinned taskbar apps, even while this app is disabled or not
-running. To undo it:
+and undo it with:
 
 ```
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisabledHotkeys /f
@@ -82,7 +87,7 @@ even with the digit swallowed: when the app pinned at that taskbar
 position is already focused, it minimizes the app instead of letting the
 desktop switch. Swallowing the Win key's own key-up and trying to
 un-minimize the app afterwards were both tried and neither helped. The
-fix is the `DisabledHotkeys` setting from the one-time setup above, which
+fix is the `DisabledHotkeys` setting described above, which
 stops Explorer from handling Win+1..9 at all.
 
 Moving a window to a desktop *could* use the one piece of this that's a
