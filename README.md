@@ -44,16 +44,24 @@ before — this app detects whether it's running on Windows 10 (builds
 10240–21999) or Windows 11 (builds 22000+) and uses the matching interface
 IDs for each, but a future Windows feature update could still break it.
 
-Similarly, `Win+<digit>` is a shortcut reserved by Explorer for launching
-pinned taskbar apps, so the OS refuses to let a normal app register it with
+Similarly, `Win+<digit>` is a shortcut reserved by Explorer for launching,
+switching to, or (if it's already the active window) minimizing the Nth
+pinned taskbar app, so the OS refuses to let a normal app register it with
 `RegisterHotKey`. Instead this app installs a low-level keyboard hook
 (`WH_KEYBOARD_LL`) that intercepts the keystroke before Explorer sees it,
 and swallows both its key-down and key-up — but only for Win+digit and
 Win+Shift+digit; Ctrl or Alt held down with the digit is left alone, so
-combinations like Ctrl+Win+3 keep working normally. This is what prevents
-Windows from also launching the corresponding pinned taskbar app: as long
-as this app is running (and not Disabled from the tray), Win+1..9 only
-switches/moves desktops and never launches a taskbar app.
+combinations like Ctrl+Win+3 keep working normally.
+
+Swallowing the digit key alone stops the launch/switch cases, but not the
+minimize case: that one turned out to be keyed off the Win key's *own*
+key-up (checking low-level key state at that point, not off receiving the
+digit key's message), so this app also swallows the Win key's key-up --
+but only when it was actually used for one of our Win+<digit> combos
+during that hold, so a plain tap of Win still opens the Start Menu
+normally. As long as this app is running (and not Disabled from the
+tray), Win+1..9 only switches/moves desktops and never touches a taskbar
+app.
 
 Moving a window to a desktop *could* use the one piece of this that's a
 documented, public API — `IVirtualDesktopManager::MoveWindowToDesktop` —

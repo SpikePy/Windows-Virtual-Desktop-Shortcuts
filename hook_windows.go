@@ -23,6 +23,11 @@ type keyboardHook struct {
 	handle   windows.Handle
 	requests chan<- desktopRequest
 	callback uintptr
+
+	// winUsedForCombo tracks whether the current Win key hold has already
+	// been used for one of our Win+<digit> combos, so its eventual key-up
+	// can also be swallowed. See the note on winKeyUp handling below.
+	winUsedForCombo bool
 }
 
 func newKeyboardHook(requests chan<- desktopRequest) *keyboardHook {
@@ -68,39 +73,59 @@ func isKeyDown(vk int) bool {
 // the switcher goroutine over a non-blocking channel send before
 // swallowing the key.
 //
-// Both the key-down AND key-up of the digit key are swallowed. Explorer's
-// own "launch pinned taskbar app N" handling for Win+<digit> can act on
-// either edge of the digit key depending on Windows version; only
-// swallowing key-down was observed to still let the launch through on its
-// key-up. Suppressing both reliably prevents it.
+// Both the key-down AND key-up of the digit key are swallowed, which is
+// enough to stop Explorer from launching or switching to a pinned taskbar
+// app. But when the app at that taskbar position is already the active
+// window, Windows instead *minimizes* it on Win+<digit> -- and that
+// specific behavior turned out to survive swallowing the digit key
+// entirely. It's evidently keyed off the Win key's own key-up (checking
+// low-level key state at that point, not off receiving the digit key's
+// message), which suppressing the digit key alone can never prevent.
+// winUsedForCombo tracks whether Win was used for one of our combos during
+// its current hold, so we can swallow the Win key's key-up too in that
+// case -- but only that case, so a plain Win tap still opens the Start
+// Menu normally.
 func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintptr {
-	if int32(nCode) == hcAction && hotkeysEnabled.Load() {
-		switch wParam {
-		case wmKeyDown, wmSysKeyDown, wmKeyUp, wmSysKeyUp:
-			kb := (*kbdllhookstruct)(unsafe.Pointer(lParam))
-			if kb.VkCode >= vk1 && kb.VkCode <= vk9 {
-				winDown := isKeyDown(vkLWin) || isKeyDown(vkRWin)
-				// Ctrl and Alt are left alone so other Win+Ctrl/Win+Alt
-				// combinations keep working; Shift toggles switch vs. move.
-				if winDown && !isKeyDown(vkControl) && !isKeyDown(vkMenu) {
-					if wParam == wmKeyDown || wParam == wmSysKeyDown {
-						req := desktopRequest{
-							action: actionSwitchToDesktop,
-							index:  int(kb.VkCode - vk1), // 0-based
-						}
-						if isKeyDown(vkShift) {
-							req.action = actionMoveWindowToDesktop
-						}
-						select {
-						case h.requests <- req:
-						default:
-							// Switcher is busy; drop the request rather
-							// than blocking this hook callback.
-						}
-					}
-					return 1 // swallow both the key-down and key-up
+	isDown := wParam == wmKeyDown || wParam == wmSysKeyDown
+	isUp := wParam == wmKeyUp || wParam == wmSysKeyUp
+
+	if int32(nCode) != hcAction || (!isDown && !isUp) {
+		return h.callNext(nCode, wParam, lParam)
+	}
+	kb := (*kbdllhookstruct)(unsafe.Pointer(lParam))
+
+	if kb.VkCode == vkLWin || kb.VkCode == vkRWin {
+		if isDown {
+			h.winUsedForCombo = false // fresh press-and-hold cycle
+		} else if h.winUsedForCombo {
+			h.winUsedForCombo = false
+			return 1 // swallow: see winUsedForCombo doc above
+		}
+		return h.callNext(nCode, wParam, lParam)
+	}
+
+	if hotkeysEnabled.Load() && kb.VkCode >= vk1 && kb.VkCode <= vk9 {
+		winDown := isKeyDown(vkLWin) || isKeyDown(vkRWin)
+		// Ctrl and Alt are left alone so other Win+Ctrl/Win+Alt
+		// combinations keep working; Shift toggles switch vs. move.
+		if winDown && !isKeyDown(vkControl) && !isKeyDown(vkMenu) {
+			if isDown {
+				req := desktopRequest{
+					action: actionSwitchToDesktop,
+					index:  int(kb.VkCode - vk1), // 0-based
 				}
+				if isKeyDown(vkShift) {
+					req.action = actionMoveWindowToDesktop
+				}
+				select {
+				case h.requests <- req:
+				default:
+					// Switcher is busy; drop the request rather than
+					// blocking this hook callback.
+				}
+				h.winUsedForCombo = true
 			}
+			return 1 // swallow both the key-down and key-up
 		}
 	}
 	return h.callNext(nCode, wParam, lParam)
