@@ -24,6 +24,9 @@ var (
 	procGetAsyncKeyState    = modUser32.NewProc("GetAsyncKeyState")
 	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
 	procSendInput           = modUser32.NewProc("SendInput")
+	procFindWindowW         = modUser32.NewProc("FindWindowW")
+	procGetWindowThreadPID  = modUser32.NewProc("GetWindowThreadProcessId")
+	procAttachThreadInput   = modUser32.NewProc("AttachThreadInput")
 
 	procRegisterClassExW = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW  = modUser32.NewProc("CreateWindowExW")
@@ -264,4 +267,36 @@ func hrFailed(hr uintptr) bool {
 func getForegroundWindow() uintptr {
 	r0, _, _ := procGetForegroundWindow.Call()
 	return r0
+}
+
+// desktopWindow returns Explorer's desktop window ("Progman"), which is
+// shown on every virtual desktop and belongs to no app, or 0 if it can't
+// be found.
+func desktopWindow() uintptr {
+	r0, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(mustUTF16Ptr("Progman"))), 0)
+	return r0
+}
+
+// activateWindow makes hwnd the foreground window and reports whether that
+// worked. Windows normally only lets the app that owns the foreground
+// window hand focus elsewhere, so this briefly attaches the calling
+// thread to that window's input queue first, the usual workaround.
+func activateWindow(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	fg := getForegroundWindow()
+	if fg == hwnd {
+		return true
+	}
+	self := uintptr(windows.GetCurrentThreadId())
+	if fg != 0 {
+		fgThread, _, _ := procGetWindowThreadPID.Call(fg, 0)
+		if fgThread != 0 && fgThread != self {
+			procAttachThreadInput.Call(self, fgThread, 1)
+			defer procAttachThreadInput.Call(self, fgThread, 0)
+		}
+	}
+	r0, _, _ := procSetForegroundWnd.Call(hwnd)
+	return r0 != 0
 }

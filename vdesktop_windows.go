@@ -132,7 +132,19 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 
 // handle resolves a request's target desktop and carries it out. Relative
 // requests past the first or last desktop do nothing.
+//
+// Before acting, it takes focus away from whatever app has it by focusing
+// the desktop, after noting the focused window for the move actions.
 func (sw *desktopSwitcher) handle(req desktopRequest) error {
+	desktop := desktopWindow()
+	hwnd := getForegroundWindow()
+	if hwnd == desktop {
+		hwnd = 0
+	}
+	if !activateWindow(desktop) {
+		debugLogf("handle: couldn't move focus to the desktop")
+	}
+
 	index := req.index
 	if req.relative {
 		current, err := sw.currentDesktopIndex()
@@ -149,12 +161,11 @@ func (sw *desktopSwitcher) handle(req desktopRequest) error {
 	case req.action == actionSwitchToDesktop:
 		return sw.switchTo(index)
 	case !req.relative:
-		_, err := sw.moveWindowTo(getForegroundWindow(), index)
+		_, err := sw.moveWindowTo(hwnd, index)
 		return err
 	default:
-		// Win+Shift+Left/Right takes the window along and keeps it
-		// focused, so pressing it again keeps moving the same window.
-		hwnd := getForegroundWindow()
+		// Win+Shift+Left/Right takes the window along and refocuses it,
+		// so pressing it again keeps moving the same window.
 		moved, err := sw.moveWindowTo(hwnd, index)
 		if err != nil || !moved {
 			return err
@@ -162,7 +173,9 @@ func (sw *desktopSwitcher) handle(req desktopRequest) error {
 		if err := sw.switchTo(index); err != nil {
 			return err
 		}
-		procSetForegroundWnd.Call(hwnd)
+		if !activateWindow(hwnd) {
+			debugLogf("handle: couldn't refocus the moved window")
+		}
 		return nil
 	}
 }

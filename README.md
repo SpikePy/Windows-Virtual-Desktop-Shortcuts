@@ -22,6 +22,10 @@ focused is also a no-op. These replace Windows' own `Win+Left`/`Win+Right`
 the window to another monitor); `Win+Ctrl+Left`/`Win+Ctrl+Right` are left
 to Windows.
 
+Every shortcut first takes focus away from the current app by focusing the
+desktop, then acts. `Win+Shift+Left`/`Win+Shift+Right` give focus back to
+the window they moved.
+
 **Explorer's own shortcuts on these keys:** Explorer uses Win+1..9 to open
 pinned taskbar apps and Win+Left/Right to snap windows, and this app can't
 fully override that (see [below](#how-it-works-and-why-its-fragile)):
