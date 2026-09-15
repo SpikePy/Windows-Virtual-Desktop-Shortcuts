@@ -1,19 +1,36 @@
 # Windows-Virtual-Desktop-Shortcuts
 
 A tiny Windows-only background utility that lets you jump straight to the
-Nth virtual desktop with **Win+1** through **Win+9**, the same way
-`Win+1..9` already jumps to the Nth pinned taskbar app.
+Nth virtual desktop with **Win+1** through **Win+9** (the same way
+`Win+1..9` already jumps to the Nth pinned taskbar app), and move the
+focused window to the Nth virtual desktop with **Win+Shift+1** through
+**Win+Shift+9**.
 
 - `Win+1` → switch to virtual desktop 1
 - `Win+2` → switch to virtual desktop 2
 - ...
 - `Win+9` → switch to virtual desktop 9
+- `Win+Shift+1` → move the focused window to virtual desktop 1 (without
+  switching to it)
+- ...
+- `Win+Shift+9` → move the focused window to virtual desktop 9
 
-If the desktop doesn't exist (e.g. you press `Win+5` but only have 3
-desktops), the shortcut is a no-op — it does not create a new desktop.
+If the desktop doesn't exist (e.g. you press `Win+5` or `Win+Shift+5` but
+only have 3 desktops), the shortcut is a no-op — it does not create a new
+desktop, and moving with no window focused is also a no-op.
 
-The app runs quietly in the system tray. Right-click the tray icon and
-choose **Exit** to quit.
+The app runs quietly in the system tray, showing its name and version on
+hover. Right-click the tray icon for:
+
+- **Enable** / **Disable** — turn the Win+1..9 shortcuts on or off without
+  uninstalling the app (whichever state is already active is greyed out).
+- **Configure** — opens `config.yaml` (creating it with defaults on first
+  use) in your default YAML editor. It lives at
+  `%APPDATA%\VirtualDesktopShortcuts\config.yaml` and currently has one
+  setting, `enabled`, which mirrors the tray's Enable/Disable — edit and
+  save it and the change takes effect within a couple of seconds, no
+  restart needed.
+- **Exit** — quits the app.
 
 ## How it works, and why it's fragile
 
@@ -31,8 +48,15 @@ Similarly, `Win+<digit>` is a shortcut reserved by Explorer for launching
 pinned taskbar apps, so the OS refuses to let a normal app register it with
 `RegisterHotKey`. Instead this app installs a low-level keyboard hook
 (`WH_KEYBOARD_LL`) that intercepts the keystroke before Explorer sees it,
-and swallows it — but only when Win+digit is pressed with no other
-modifiers held, so combinations like Ctrl+Win+3 are left alone.
+and swallows it — but only for Win+digit and Win+Shift+digit; Ctrl or Alt
+held down with the digit is left alone, so combinations like Ctrl+Win+3
+keep working normally.
+
+Moving a window to a desktop is the one piece of this that *is* a
+documented, stable public API — `IVirtualDesktopManager::MoveWindowToDesktop`
+— it just needs a target desktop's GUID, which still has to come from the
+undocumented enumeration interfaces above since there's no public way to
+list desktops or get "the GUID of desktop N".
 
 ## Building
 
@@ -45,6 +69,23 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-H=windowsgui" -o Vir
 (`-H=windowsgui` prevents a console window from flashing on startup; it's
 optional during development.) The build has no cgo dependency, so it cross
 compiles cleanly from Linux/macOS as well as natively on Windows.
+
+To show a real version instead of `dev` in the tray tooltip, add
+`-X main.version=v1.2.3` to `-ldflags` (the release workflow does this
+automatically, using the pushed tag).
+
+### Icon
+
+The app's icon ([`winres/`](winres/)) is embedded as a Windows resource via
+[go-winres](https://github.com/tc-hib/go-winres): `rsrc_windows_amd64.syso`
+is checked into the repo root and `go build` links it in automatically —
+no extra build step needed. To change the icon, replace the PNGs under
+`winres/` and regenerate it:
+
+```sh
+go install github.com/tc-hib/go-winres@latest
+go-winres make --arch amd64 --out rsrc
+```
 
 ## Running
 

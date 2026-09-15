@@ -36,6 +36,15 @@ var (
 	// Windows 11 (builds 22000+).
 	iidVirtualDesktopManagerInternalWin11 = guid("{53F5CA0B-158F-4124-900C-057158060B27}")
 	iidVirtualDesktopWin11                = guid("{3F07F4BE-B107-441A-AF0F-39D82529072C}")
+
+	// IVirtualDesktopManager, unlike everything else in this file, *is* a
+	// public, documented, stable COM interface (shobjidl_core.h) -- same
+	// CLSID/IID and vtable on every Windows version. It's what
+	// moveForegroundWindowTo uses to actually move a window once it has
+	// the target desktop's GUID (found via the undocumented interfaces
+	// above, since enumerating desktops still isn't public).
+	clsidVirtualDesktopManager = guid("{AA509086-5CA9-4C25-8F95-589D3C07B48A}")
+	iidIVirtualDesktopManager  = guid("{A5CD92FF-29BE-454C-8D04-D82879FB3F1B}")
 )
 
 // vtable slot indices (0-based, counting QueryInterface=0, AddRef=1,
@@ -49,6 +58,10 @@ const (
 
 	slotObjectArrayGetCount = 3
 	slotObjectArrayGetAt    = 4
+
+	slotVirtualDesktopGetID = 4
+
+	slotVDMMoveWindowToDesktop = 5
 )
 
 func guid(s string) *windows.GUID {
@@ -68,15 +81,28 @@ type desktopSwitcher struct {
 	iidVirtualDesktop  *windows.GUID
 }
 
-// runDesktopSwitcher processes desktop-switch requests until the channel is
-// closed. It must be started via `go runDesktopSwitcher(...)` from a
-// goroutine that is allowed to own an OS thread indefinitely.
-func runDesktopSwitcher(requests <-chan int) {
+// desktopAction identifies what a hotkey-triggered request should do.
+type desktopAction int
+
+const (
+	actionSwitchToDesktop     desktopAction = iota // Win+N
+	actionMoveWindowToDesktop                      // Win+Shift+N
+)
+
+type desktopRequest struct {
+	action desktopAction
+	index  int // 0-based
+}
+
+// runDesktopSwitcher processes desktop switch/move requests until the
+// channel is closed. It must be started via `go runDesktopSwitcher(...)`
+// from a goroutine that is allowed to own an OS thread indefinitely.
+func runDesktopSwitcher(requests <-chan desktopRequest) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	if err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED); err != nil {
-		messageBoxError(fmt.Sprintf("Failed to initialize COM: %v", err), "Virtual Desktop Switcher")
+		messageBoxError(fmt.Sprintf("Failed to initialize COM: %v", err), appName)
 		return
 	}
 	defer windows.CoUninitialize()
@@ -91,9 +117,64 @@ func runDesktopSwitcher(requests <-chan int) {
 		sw.iidVirtualDesktop = iidVirtualDesktopWin11
 	}
 
-	for zeroBasedIndex := range requests {
-		_ = sw.switchTo(zeroBasedIndex)
+	for req := range requests {
+		switch req.action {
+		case actionMoveWindowToDesktop:
+			_ = sw.moveForegroundWindowTo(req.index)
+		default:
+			_ = sw.switchTo(req.index)
+		}
 	}
+}
+
+// queryManagerInternal fetches the undocumented VirtualDesktopManagerInternal
+// service through the ImmersiveShell's IServiceProvider. Every action in
+// this file starts here.
+func (sw *desktopSwitcher) queryManagerInternal(provider unsafe.Pointer) (unsafe.Pointer, error) {
+	var managerInternal unsafe.Pointer
+	hr := comCall(provider, slotServiceProviderQueryService,
+		uintptr(unsafe.Pointer(clsidVirtualDesktopManagerInternal)),
+		uintptr(unsafe.Pointer(sw.iidManagerInternal)),
+		uintptr(unsafe.Pointer(&managerInternal)),
+	)
+	if hrFailed(hr) || managerInternal == nil {
+		return nil, fmt.Errorf("query VirtualDesktopManagerInternal service: hr=0x%08X", uint32(hr))
+	}
+	return managerInternal, nil
+}
+
+// desktopAt returns the IVirtualDesktop COM pointer at the given
+// zero-based index (the caller must Release it), or nil if no such
+// desktop exists.
+func (sw *desktopSwitcher) desktopAt(managerInternal unsafe.Pointer, zeroBasedIndex int) (unsafe.Pointer, error) {
+	var objArray unsafe.Pointer
+	hr := comCall(managerInternal, slotManagerInternalGetDesktops, uintptr(unsafe.Pointer(&objArray)))
+	if hrFailed(hr) || objArray == nil {
+		return nil, fmt.Errorf("get_desktops: hr=0x%08X", uint32(hr))
+	}
+	defer comRelease(objArray)
+
+	var count uint32
+	hr = comCall(objArray, slotObjectArrayGetCount, uintptr(unsafe.Pointer(&count)))
+	if hrFailed(hr) {
+		return nil, fmt.Errorf("IObjectArray::GetCount: hr=0x%08X", uint32(hr))
+	}
+
+	if uint32(zeroBasedIndex) >= count {
+		// Desktop N doesn't exist.
+		return nil, nil
+	}
+
+	var desktop unsafe.Pointer
+	hr = comCall(objArray, slotObjectArrayGetAt,
+		uintptr(uint32(zeroBasedIndex)),
+		uintptr(unsafe.Pointer(sw.iidVirtualDesktop)),
+		uintptr(unsafe.Pointer(&desktop)),
+	)
+	if hrFailed(hr) || desktop == nil {
+		return nil, fmt.Errorf("IObjectArray::GetAt(%d): hr=0x%08X", zeroBasedIndex, uint32(hr))
+	}
+	return desktop, nil
 }
 
 // switchTo switches to the desktop at the given zero-based index. If no
@@ -105,49 +186,75 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	}
 	defer comRelease(provider)
 
-	var managerInternal unsafe.Pointer
-	hr := comCall(provider, slotServiceProviderQueryService,
-		uintptr(unsafe.Pointer(clsidVirtualDesktopManagerInternal)),
-		uintptr(unsafe.Pointer(sw.iidManagerInternal)),
-		uintptr(unsafe.Pointer(&managerInternal)),
-	)
-	if hrFailed(hr) || managerInternal == nil {
-		return fmt.Errorf("query VirtualDesktopManagerInternal service: hr=0x%08X", uint32(hr))
+	managerInternal, err := sw.queryManagerInternal(provider)
+	if err != nil {
+		return err
 	}
 	defer comRelease(managerInternal)
 
-	var objArray unsafe.Pointer
-	hr = comCall(managerInternal, slotManagerInternalGetDesktops, uintptr(unsafe.Pointer(&objArray)))
-	if hrFailed(hr) || objArray == nil {
-		return fmt.Errorf("get_desktops: hr=0x%08X", uint32(hr))
+	desktop, err := sw.desktopAt(managerInternal, zeroBasedIndex)
+	if err != nil {
+		return err
 	}
-	defer comRelease(objArray)
-
-	var count uint32
-	hr = comCall(objArray, slotObjectArrayGetCount, uintptr(unsafe.Pointer(&count)))
-	if hrFailed(hr) {
-		return fmt.Errorf("IObjectArray::GetCount: hr=0x%08X", uint32(hr))
-	}
-
-	if uint32(zeroBasedIndex) >= count {
-		// Desktop N doesn't exist; silently ignore per spec.
+	if desktop == nil {
 		return nil
-	}
-
-	var desktop unsafe.Pointer
-	hr = comCall(objArray, slotObjectArrayGetAt,
-		uintptr(uint32(zeroBasedIndex)),
-		uintptr(unsafe.Pointer(sw.iidVirtualDesktop)),
-		uintptr(unsafe.Pointer(&desktop)),
-	)
-	if hrFailed(hr) || desktop == nil {
-		return fmt.Errorf("IObjectArray::GetAt(%d): hr=0x%08X", zeroBasedIndex, uint32(hr))
 	}
 	defer comRelease(desktop)
 
-	hr = comCall(managerInternal, slotManagerInternalSwitchDesktop, uintptr(desktop))
+	hr := comCall(managerInternal, slotManagerInternalSwitchDesktop, uintptr(desktop))
 	if hrFailed(hr) {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
+	}
+	return nil
+}
+
+// moveForegroundWindowTo moves the current foreground window to the
+// desktop at the given zero-based index, without switching to it. If no
+// such desktop exists, or there's no foreground window, it does nothing.
+func (sw *desktopSwitcher) moveForegroundWindowTo(zeroBasedIndex int) error {
+	hwnd := getForegroundWindow()
+	if hwnd == 0 {
+		return nil
+	}
+
+	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
+	if err != nil {
+		return fmt.Errorf("create ImmersiveShell instance: %w", err)
+	}
+	defer comRelease(provider)
+
+	managerInternal, err := sw.queryManagerInternal(provider)
+	if err != nil {
+		return err
+	}
+	defer comRelease(managerInternal)
+
+	desktop, err := sw.desktopAt(managerInternal, zeroBasedIndex)
+	if err != nil {
+		return err
+	}
+	if desktop == nil {
+		return nil
+	}
+
+	var desktopID windows.GUID
+	hr := comCall(desktop, slotVirtualDesktopGetID, uintptr(unsafe.Pointer(&desktopID)))
+	comRelease(desktop)
+	if hrFailed(hr) {
+		return fmt.Errorf("IVirtualDesktop::get_id: hr=0x%08X", uint32(hr))
+	}
+
+	// MoveWindowToDesktop is, unusually, a documented public API -- no
+	// Windows-version branching needed here.
+	manager, err := coCreateInstance(clsidVirtualDesktopManager, clsctxLocalServer, iidIVirtualDesktopManager)
+	if err != nil {
+		return fmt.Errorf("create VirtualDesktopManager instance: %w", err)
+	}
+	defer comRelease(manager)
+
+	hr = comCall(manager, slotVDMMoveWindowToDesktop, hwnd, uintptr(unsafe.Pointer(&desktopID)))
+	if hrFailed(hr) {
+		return fmt.Errorf("MoveWindowToDesktop: hr=0x%08X", uint32(hr))
 	}
 	return nil
 }

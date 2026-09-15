@@ -21,6 +21,7 @@ var (
 	procUnhookWindowsHookEx = modUser32.NewProc("UnhookWindowsHookEx")
 	procCallNextHookEx      = modUser32.NewProc("CallNextHookEx")
 	procGetAsyncKeyState    = modUser32.NewProc("GetAsyncKeyState")
+	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
 
 	procRegisterClassExW = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW  = modUser32.NewProc("CreateWindowExW")
@@ -42,6 +43,8 @@ var (
 	procMessageBoxW      = modUser32.NewProc("MessageBoxW")
 
 	procShellNotifyIconW = modShell32.NewProc("Shell_NotifyIconW")
+	procShellExecuteW    = modShell32.NewProc("ShellExecuteW")
+	procExtractIconExW   = modShell32.NewProc("ExtractIconExW")
 
 	procCoCreateInstance = modOle32.NewProc("CoCreateInstance")
 
@@ -78,10 +81,14 @@ const (
 	idiApplication = 32512
 	idcArrow       = 32512
 
-	mfString = 0x0000
+	mfString    = 0x0000
+	mfGrayed    = 0x00000001
+	mfSeparator = 0x00000800
 
 	tpmRightButton = 0x0002
 	tpmReturnCmd   = 0x0100
+
+	swShowNormal = 1
 
 	nifMessage = 0x00000001
 	nifIcon    = 0x00000002
@@ -197,4 +204,11 @@ func comRelease(obj unsafe.Pointer) {
 
 func hrFailed(hr uintptr) bool {
 	return int32(hr) < 0
+}
+
+// getForegroundWindow returns the HWND of the currently focused top-level
+// window, or 0 if there is none.
+func getForegroundWindow() uintptr {
+	r0, _, _ := procGetForegroundWindow.Call()
+	return r0
 }

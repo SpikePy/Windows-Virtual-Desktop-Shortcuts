@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"unsafe"
 
@@ -11,10 +12,15 @@ import (
 )
 
 const (
-	trayIconID  = 1
-	menuIDExit  = 1001
-	windowTitle = "Virtual Desktop Switcher"
-	className   = "VDSwitcherHiddenWindowClass"
+	trayIconID = 1
+
+	menuIDEnable    = 1001
+	menuIDDisable   = 1002
+	menuIDConfigure = 1003
+	menuIDExit      = 1004
+
+	appName   = "Virtual Desktop Shortcuts"
+	className = "VDSwitcherHiddenWindowClass"
 )
 
 // trayApp owns the hidden window, tray icon and keyboard hook. Everything
@@ -32,12 +38,11 @@ type trayApp struct {
 // user picks "Exit" from the tray menu or the window is otherwise
 // destroyed. It must be called from a goroutine that has called
 // runtime.LockOSThread and will not unlock it until this function returns.
-func runApp(requests chan<- int) error {
+func runApp(requests chan<- desktopRequest) error {
 	hInstanceR, _, _ := procGetModuleHandleW.Call(0)
 	app := &trayApp{hInstance: windows.Handle(hInstanceR)}
 
-	iconR, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
-	app.hIcon = windows.Handle(iconR)
+	app.hIcon = loadAppIcon()
 	cursorR, _, _ := procLoadCursorW.Call(0, uintptr(idcArrow))
 
 	classNamePtr := mustUTF16Ptr(className)
@@ -61,7 +66,7 @@ func runApp(requests chan<- int) error {
 	hwndR, _, err := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(classNamePtr)),
-		uintptr(unsafe.Pointer(mustUTF16Ptr(windowTitle))),
+		uintptr(unsafe.Pointer(mustUTF16Ptr(appName))),
 		0, // no WS_VISIBLE: the window is never shown
 		0, 0, 0, 0,
 		0, 0, uintptr(app.hInstance), 0,
@@ -81,7 +86,7 @@ func runApp(requests chan<- int) error {
 	if err := hook.install(); err != nil {
 		messageBoxError(
 			fmt.Sprintf("Failed to install the keyboard hook for Win+1..9:\n%v", err),
-			windowTitle,
+			appName,
 		)
 		return err
 	}
@@ -90,6 +95,31 @@ func runApp(requests chan<- int) error {
 
 	app.messageLoop()
 	return nil
+}
+
+// loadAppIcon extracts the icon embedded in this executable's own resources
+// (via go-winres, see winres/winres.json and rsrc_windows_amd64.syso) so
+// the tray icon matches the one shown for the .exe file in Explorer. Index
+// 0 is safe to hardcode: the exe embeds exactly one icon group, so it's
+// unambiguous regardless of what resource ID/name go-winres assigned it.
+// Falls back to the stock application icon if that ever fails.
+func loadAppIcon() windows.Handle {
+	if exePath, err := os.Executable(); err == nil {
+		var hIconLarge, hIconSmall windows.Handle
+		r0, _, _ := procExtractIconExW.Call(
+			uintptr(unsafe.Pointer(mustUTF16Ptr(exePath))),
+			0,
+			uintptr(unsafe.Pointer(&hIconLarge)),
+			uintptr(unsafe.Pointer(&hIconSmall)),
+			1,
+		)
+		if int32(r0) > 0 && hIconSmall != 0 {
+			return hIconSmall
+		}
+	}
+
+	iconR, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
+	return windows.Handle(iconR)
 }
 
 func (app *trayApp) messageLoop() {
@@ -115,9 +145,7 @@ func (app *trayApp) wndProc(hwnd, message, wParam, lParam uintptr) uintptr {
 		}
 		return 0
 	case wmCommand:
-		if loword(uint32(wParam)) == menuIDExit {
-			procDestroyWindow.Call(uintptr(app.hwnd))
-		}
+		app.handleCommand(loword(uint32(wParam)))
 		return 0
 	case wmDestroy:
 		procPostQuitMessage.Call(0)
@@ -125,6 +153,47 @@ func (app *trayApp) wndProc(hwnd, message, wParam, lParam uintptr) uintptr {
 	}
 	r0, _, _ := procDefWindowProcW.Call(hwnd, message, wParam, lParam)
 	return r0
+}
+
+func (app *trayApp) handleCommand(id uint16) {
+	switch id {
+	case menuIDEnable:
+		hotkeysEnabled.Store(true)
+		if err := setEnabledInFile(true); err != nil {
+			messageBoxError(fmt.Sprintf("Enabled, but failed to save it to the config file:\n%v", err), appName)
+		}
+	case menuIDDisable:
+		hotkeysEnabled.Store(false)
+		if err := setEnabledInFile(false); err != nil {
+			messageBoxError(fmt.Sprintf("Disabled, but failed to save it to the config file:\n%v", err), appName)
+		}
+	case menuIDConfigure:
+		app.openConfigure()
+	case menuIDExit:
+		procDestroyWindow.Call(uintptr(app.hwnd))
+	}
+}
+
+// openConfigure makes sure the config file exists, then opens it in
+// whatever program is associated with .yaml files.
+func (app *trayApp) openConfigure() {
+	path, err := ensureConfigFile()
+	if err != nil {
+		messageBoxError(fmt.Sprintf("Couldn't create the config file:\n%v", err), appName)
+		return
+	}
+
+	r0, _, _ := procShellExecuteW.Call(
+		uintptr(app.hwnd),
+		uintptr(unsafe.Pointer(mustUTF16Ptr("open"))),
+		uintptr(unsafe.Pointer(mustUTF16Ptr(path))),
+		0,
+		0,
+		uintptr(swShowNormal),
+	)
+	if r0 <= 32 { // ShellExecute returns a value > 32 on success.
+		messageBoxError(fmt.Sprintf("Couldn't open an editor for:\n%s", path), appName)
+	}
 }
 
 func (app *trayApp) addTrayIcon() error {
@@ -135,7 +204,7 @@ func (app *trayApp) addTrayIcon() error {
 	nid.uFlags = nifMessage | nifIcon | nifTip
 	nid.uCallbackMessage = wmTrayCallback
 	nid.hIcon = app.hIcon
-	setTip(&nid, "Virtual Desktop Switcher (Win+1..9)")
+	setTip(&nid, fmt.Sprintf("%s %s", appName, version))
 
 	r0, _, _ := procShellNotifyIconW.Call(uintptr(nimAdd), uintptr(unsafe.Pointer(&nid)))
 	if r0 == 0 {
@@ -160,12 +229,18 @@ func (app *trayApp) showMenu() {
 	hMenu := windows.Handle(hMenuR)
 	defer procDestroyMenu.Call(uintptr(hMenu))
 
-	procAppendMenuW.Call(
-		uintptr(hMenu),
-		uintptr(mfString),
-		uintptr(menuIDExit),
-		uintptr(unsafe.Pointer(mustUTF16Ptr("Exit"))),
-	)
+	enableFlags, disableFlags := uintptr(mfString), uintptr(mfString)
+	if hotkeysEnabled.Load() {
+		enableFlags = mfString | mfGrayed
+	} else {
+		disableFlags = mfString | mfGrayed
+	}
+
+	procAppendMenuW.Call(uintptr(hMenu), enableFlags, uintptr(menuIDEnable), uintptr(unsafe.Pointer(mustUTF16Ptr("Enable"))))
+	procAppendMenuW.Call(uintptr(hMenu), disableFlags, uintptr(menuIDDisable), uintptr(unsafe.Pointer(mustUTF16Ptr("Disable"))))
+	procAppendMenuW.Call(uintptr(hMenu), uintptr(mfString), uintptr(menuIDConfigure), uintptr(unsafe.Pointer(mustUTF16Ptr("Configure"))))
+	procAppendMenuW.Call(uintptr(hMenu), uintptr(mfSeparator), 0, 0)
+	procAppendMenuW.Call(uintptr(hMenu), uintptr(mfString), uintptr(menuIDExit), uintptr(unsafe.Pointer(mustUTF16Ptr("Exit"))))
 
 	var pt point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))

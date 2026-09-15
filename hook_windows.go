@@ -10,7 +10,9 @@ import (
 )
 
 // keyboardHook manages the low-level keyboard hook used to intercept
-// Win+1..Win+9 before Explorer's taskbar handles them.
+// Win+1..Win+9 (switch to desktop N) and Win+Shift+1..Win+Shift+9 (move
+// the foreground window to desktop N) before Explorer's taskbar handles
+// them.
 //
 // RegisterHotKey cannot be used here: Win+<digit> is reserved by the shell
 // for launching pinned taskbar apps, and the OS refuses to let normal
@@ -19,11 +21,11 @@ import (
 // returning a non-zero value from the hook procedure.
 type keyboardHook struct {
 	handle   windows.Handle
-	requests chan<- int
+	requests chan<- desktopRequest
 	callback uintptr
 }
 
-func newKeyboardHook(requests chan<- int) *keyboardHook {
+func newKeyboardHook(requests chan<- desktopRequest) *keyboardHook {
 	h := &keyboardHook{requests: requests}
 	h.callback = syscall.NewCallback(h.lowLevelKeyboardProc)
 	return h
@@ -62,17 +64,26 @@ func isKeyDown(vk int) bool {
 
 // lowLevelKeyboardProc is the WH_KEYBOARD_LL hook procedure. It must return
 // quickly: it only classifies the keystroke and, if it is a plain
-// Win+<digit> combination, hands the desktop index off to the switcher
-// goroutine over a non-blocking channel send before swallowing the key.
+// Win+<digit> or Win+Shift+<digit> combination, hands the request off to
+// the switcher goroutine over a non-blocking channel send before
+// swallowing the key.
 func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintptr {
-	if int32(nCode) == hcAction && (wParam == wmKeyDown || wParam == wmSysKeyDown) {
+	if int32(nCode) == hcAction && hotkeysEnabled.Load() && (wParam == wmKeyDown || wParam == wmSysKeyDown) {
 		kb := (*kbdllhookstruct)(unsafe.Pointer(lParam))
 		if kb.VkCode >= vk1 && kb.VkCode <= vk9 {
 			winDown := isKeyDown(vkLWin) || isKeyDown(vkRWin)
-			if winDown && !isKeyDown(vkControl) && !isKeyDown(vkShift) && !isKeyDown(vkMenu) {
-				index := int(kb.VkCode - vk1) // 0-based
+			// Ctrl and Alt are left alone so other Win+Ctrl/Win+Alt
+			// combinations keep working; Shift toggles switch vs. move.
+			if winDown && !isKeyDown(vkControl) && !isKeyDown(vkMenu) {
+				req := desktopRequest{
+					action: actionSwitchToDesktop,
+					index:  int(kb.VkCode - vk1), // 0-based
+				}
+				if isKeyDown(vkShift) {
+					req.action = actionMoveWindowToDesktop
+				}
 				select {
-				case h.requests <- index:
+				case h.requests <- req:
 				default:
 					// Switcher is busy; drop the request rather than
 					// blocking this hook callback.
