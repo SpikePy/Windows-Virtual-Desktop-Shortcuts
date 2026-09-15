@@ -147,11 +147,13 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 				if isKeyDown(vkShift) {
 					req.action = actionMoveWindowToDesktop
 				}
+				debugLogf("hook: digit %d -> request %+v", kb.VkCode-vk1+1, req)
 				select {
 				case h.requests <- req:
 				default:
 					// Switcher is busy; drop the request rather than
 					// blocking this hook callback.
+					debugLogf("hook: dropped request, switcher channel full")
 				}
 				h.winUsedForCombo = true
 			}

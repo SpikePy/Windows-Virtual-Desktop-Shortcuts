@@ -207,6 +207,8 @@ func (sw *desktopSwitcher) desktopAt(managerInternal unsafe.Pointer, zeroBasedIn
 // acted and moved focus elsewhere, so re-querying it here would risk
 // checking/restoring the wrong window.
 func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) error {
+	debugLogf("switchTo(%d): hwndBefore=0x%X iconicNow=%v", zeroBasedIndex, hwndBefore, hwndBefore != 0 && isMinimized(hwndBefore))
+
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
 		return fmt.Errorf("create ImmersiveShell instance: %w", err)
@@ -224,6 +226,7 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) erro
 		return err
 	}
 	if desktop == nil {
+		debugLogf("switchTo(%d): no such desktop", zeroBasedIndex)
 		return nil
 	}
 	defer comRelease(desktop)
@@ -232,6 +235,7 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) erro
 	if hrFailed(hr) {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
 	}
+	debugLogf("switchTo(%d): switch_desktop OK, polling hwndBefore=0x%X", zeroBasedIndex, hwndBefore)
 
 	go pollRestoreIfMinimized(hwndBefore)
 
@@ -245,6 +249,7 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) erro
 // actually happens instead of guessing one specific delay.
 func pollRestoreIfMinimized(hwnd uintptr) {
 	if hwnd == 0 {
+		debugLogf("pollRestoreIfMinimized: hwnd is 0, nothing to watch")
 		return
 	}
 	sleeps := []time.Duration{
@@ -259,13 +264,19 @@ func pollRestoreIfMinimized(hwnd uintptr) {
 		300 * time.Millisecond,
 		400 * time.Millisecond,
 	}
-	for _, d := range sleeps {
+	elapsed := time.Duration(0)
+	for i, d := range sleeps {
 		time.Sleep(d)
-		if isMinimized(hwnd) {
+		elapsed += d
+		minimized := isMinimized(hwnd)
+		debugLogf("pollRestoreIfMinimized: check %d at +%v, minimized=%v", i, elapsed, minimized)
+		if minimized {
 			restoreWindow(hwnd)
+			debugLogf("pollRestoreIfMinimized: restored hwnd=0x%X, now minimized=%v", hwnd, isMinimized(hwnd))
 			return
 		}
 	}
+	debugLogf("pollRestoreIfMinimized: gave up after %d checks (%v total), never saw hwnd=0x%X minimized", len(sleeps), elapsed, hwnd)
 }
 
 // queryViewCollection fetches IApplicationViewCollection through the
