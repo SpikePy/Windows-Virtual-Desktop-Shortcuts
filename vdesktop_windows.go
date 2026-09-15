@@ -37,14 +37,12 @@ var (
 	iidVirtualDesktopManagerInternalWin11 = guid("{53F5CA0B-158F-4124-900C-057158060B27}")
 	iidVirtualDesktopWin11                = guid("{3F07F4BE-B107-441A-AF0F-39D82529072C}")
 
-	// IVirtualDesktopManager, unlike everything else in this file, *is* a
-	// public, documented, stable COM interface (shobjidl_core.h) -- same
-	// CLSID/IID and vtable on every Windows version. It's what
-	// moveForegroundWindowTo uses to actually move a window once it has
-	// the target desktop's GUID (found via the undocumented interfaces
-	// above, since enumerating desktops still isn't public).
-	clsidVirtualDesktopManager = guid("{AA509086-5CA9-4C25-8F95-589D3C07B48A}")
-	iidIVirtualDesktopManager  = guid("{A5CD92FF-29BE-454C-8D04-D82879FB3F1B}")
+	// IApplicationViewCollection is what turns a plain HWND into the
+	// IApplicationView that move_view_to_desktop (below) needs. Same IID
+	// on every Windows version, and -- unusually for this file -- it's
+	// queried from IServiceProvider using its own IID as both the
+	// "service" and the requested interface.
+	iidIApplicationViewCollection = guid("{1841C6D7-4F9D-42C0-AF41-8747538F10E5}")
 )
 
 // vtable slot indices (0-based, counting QueryInterface=0, AddRef=1,
@@ -52,16 +50,15 @@ var (
 const (
 	slotServiceProviderQueryService = 3
 
-	slotManagerInternalGetDesktopCount = 3
-	slotManagerInternalGetDesktops     = 7
-	slotManagerInternalSwitchDesktop   = 9
+	slotManagerInternalGetDesktopCount   = 3
+	slotManagerInternalMoveViewToDesktop = 4
+	slotManagerInternalGetDesktops       = 7
+	slotManagerInternalSwitchDesktop     = 9
 
 	slotObjectArrayGetCount = 3
 	slotObjectArrayGetAt    = 4
 
-	slotVirtualDesktopGetID = 4
-
-	slotVDMMoveWindowToDesktop = 5
+	slotAppViewCollectionGetViewForHwnd = 6
 )
 
 func guid(s string) *windows.GUID {
@@ -215,9 +212,46 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	return nil
 }
 
+// queryViewCollection fetches IApplicationViewCollection through the
+// ImmersiveShell's IServiceProvider, using its own IID as both the
+// "service" identifier and the requested interface (the pattern this one
+// particular service uses).
+func (sw *desktopSwitcher) queryViewCollection(provider unsafe.Pointer) (unsafe.Pointer, error) {
+	var viewCollection unsafe.Pointer
+	hr := comCall(provider, slotServiceProviderQueryService,
+		uintptr(unsafe.Pointer(iidIApplicationViewCollection)),
+		uintptr(unsafe.Pointer(iidIApplicationViewCollection)),
+		uintptr(unsafe.Pointer(&viewCollection)),
+	)
+	if hrFailed(hr) || viewCollection == nil {
+		return nil, fmt.Errorf("query ApplicationViewCollection service: hr=0x%08X", uint32(hr))
+	}
+	return viewCollection, nil
+}
+
+// viewForHwnd resolves a top-level window to its IApplicationView (the
+// caller must Release it).
+func viewForHwnd(viewCollection unsafe.Pointer, hwnd uintptr) (unsafe.Pointer, error) {
+	var view unsafe.Pointer
+	hr := comCall(viewCollection, slotAppViewCollectionGetViewForHwnd, hwnd, uintptr(unsafe.Pointer(&view)))
+	if hrFailed(hr) || view == nil {
+		return nil, fmt.Errorf("IApplicationViewCollection::GetViewForHwnd: hr=0x%08X", uint32(hr))
+	}
+	return view, nil
+}
+
 // moveForegroundWindowTo moves the current foreground window to the
 // desktop at the given zero-based index, without switching to it. If no
 // such desktop exists, or there's no foreground window, it does nothing.
+//
+// This deliberately does NOT use the public, documented
+// IVirtualDesktopManager::MoveWindowToDesktop: in practice it reliably
+// fails with E_ACCESSDENIED (0x80070005) for windows outside the calling
+// process, which is a widely-reported limitation of that API, not
+// something specific to this app. IVirtualDesktopManagerInternal's
+// undocumented move_view_to_desktop, operating on an IApplicationView
+// instead of a raw HWND, is what actually works -- the same approach real
+// tools (e.g. VirtualDesktopAccessor) use for exactly this reason.
 func (sw *desktopSwitcher) moveForegroundWindowTo(zeroBasedIndex int) error {
 	hwnd := getForegroundWindow()
 	if hwnd == 0 {
@@ -243,28 +277,23 @@ func (sw *desktopSwitcher) moveForegroundWindowTo(zeroBasedIndex int) error {
 	if desktop == nil {
 		return nil
 	}
+	defer comRelease(desktop)
 
-	var desktopID windows.GUID
-	hr := comCall(desktop, slotVirtualDesktopGetID, uintptr(unsafe.Pointer(&desktopID)))
-	comRelease(desktop)
-	if hrFailed(hr) {
-		return fmt.Errorf("IVirtualDesktop::get_id: hr=0x%08X", uint32(hr))
-	}
-
-	// MoveWindowToDesktop is, unusually, a documented public API -- no
-	// Windows-version branching needed here. Unlike CLSID_ImmersiveShell
-	// (an out-of-process object hosted by the running explorer.exe, hence
-	// CLSCTX_LOCAL_SERVER above), CLSID_VirtualDesktopManager is an
-	// in-process server (a DLL loaded directly into this process).
-	manager, err := coCreateInstance(clsidVirtualDesktopManager, clsctxInprocServer, iidIVirtualDesktopManager)
+	viewCollection, err := sw.queryViewCollection(provider)
 	if err != nil {
-		return fmt.Errorf("create VirtualDesktopManager instance: %w", err)
+		return err
 	}
-	defer comRelease(manager)
+	defer comRelease(viewCollection)
 
-	hr = comCall(manager, slotVDMMoveWindowToDesktop, hwnd, uintptr(unsafe.Pointer(&desktopID)))
+	view, err := viewForHwnd(viewCollection, hwnd)
+	if err != nil {
+		return err
+	}
+	defer comRelease(view)
+
+	hr := comCall(managerInternal, slotManagerInternalMoveViewToDesktop, uintptr(view), uintptr(desktop))
 	if hrFailed(hr) {
-		return fmt.Errorf("MoveWindowToDesktop: hr=0x%08X", uint32(hr))
+		return fmt.Errorf("move_view_to_desktop: hr=0x%08X", uint32(hr))
 	}
 	return nil
 }

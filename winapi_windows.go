@@ -105,8 +105,7 @@ const (
 	mbIconError = 0x00000010
 	mbOK        = 0x00000000
 
-	clsctxInprocServer = 0x1
-	clsctxLocalServer  = 0x4
+	clsctxLocalServer = 0x4
 )
 
 type point struct {

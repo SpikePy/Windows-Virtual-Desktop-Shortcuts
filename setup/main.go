@@ -110,17 +110,56 @@ func waitToClose() {
 }
 
 // promptForAction shows the "install/update or uninstall" menu and reads
-// the user's choice from stdin, reprompting on invalid input.
+// the user's choice from stdin, reprompting on invalid input. If nothing
+// is chosen within 5 seconds of the first prompt, it defaults to
+// install/update (e.g. for unattended runs).
+//
+// Input is read by a single background goroutine for the lifetime of the
+// prompt, rather than a fresh blocking read per attempt: bufio.Reader
+// isn't safe for concurrent reads, and starting a new blocking read on
+// every retry (which a naive per-iteration timeout would need) risks two
+// reads racing on stdin at once.
 func promptForAction() string {
-	reader := bufio.NewReader(os.Stdin)
+	lines := make(chan string)
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				close(lines)
+				return
+			}
+			lines <- line
+		}
+	}()
+
+	first := true
 	for {
 		fmt.Println()
 		fmt.Println("What would you like to do?")
 		fmt.Println("  1) Install / update")
 		fmt.Println("  2) Uninstall")
-		fmt.Print("Enter choice [1-2]: ")
 
-		line, _ := reader.ReadString('\n')
+		var line string
+		var ok bool
+		if first {
+			fmt.Print("Enter choice [1-2] (defaults to Install/update in 5s): ")
+			select {
+			case line, ok = <-lines:
+			case <-time.After(5 * time.Second):
+				fmt.Println("\nNo input received -- defaulting to Install / update.")
+				return "install"
+			}
+			first = false
+		} else {
+			fmt.Print("Enter choice [1-2]: ")
+			line, ok = <-lines
+		}
+		if !ok {
+			// stdin closed (e.g. redirected from an empty/closed pipe).
+			return "install"
+		}
+
 		switch strings.TrimSpace(line) {
 		case "1":
 			return "install"

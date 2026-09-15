@@ -55,11 +55,16 @@ Windows from also launching the corresponding pinned taskbar app: as long
 as this app is running (and not Disabled from the tray), Win+1..9 only
 switches/moves desktops and never launches a taskbar app.
 
-Moving a window to a desktop is the one piece of this that *is* a
-documented, stable public API — `IVirtualDesktopManager::MoveWindowToDesktop`
-— it just needs a target desktop's GUID, which still has to come from the
-undocumented enumeration interfaces above since there's no public way to
-list desktops or get "the GUID of desktop N".
+Moving a window to a desktop *could* use the one piece of this that's a
+documented, public API — `IVirtualDesktopManager::MoveWindowToDesktop` —
+but in practice that reliably fails with `E_ACCESSDENIED` for windows
+outside the calling process (a widely-reported limitation, not something
+specific to this app). Instead this app uses the same undocumented
+mechanism real tools like VirtualDesktopAccessor use:
+`IVirtualDesktopManagerInternal::MoveViewToDesktop`, which operates on an
+`IApplicationView` (resolved from the target HWND via
+`IApplicationViewCollection::GetViewForHwnd`) rather than a raw HWND, and
+actually works.
 
 ## Building
 
@@ -119,7 +124,7 @@ Virtual Desktop Shortcuts - Setup
 What would you like to do?
   1) Install / update
   2) Uninstall
-Enter choice [1-2]:
+Enter choice [1-2] (defaults to Install/update in 5s):
 ```
 
 - **1) Install / update** downloads the newest GitHub release of this tool
@@ -127,6 +132,9 @@ Enter choice [1-2]:
   (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`), so it's
   always running and always launches automatically at sign-in — no manual
   copying required. Running this again later re-checks and updates it.
+  This is also the default: if nothing is chosen within 5 seconds of the
+  prompt appearing, it runs automatically (handy for unattended/scripted
+  first-time setup).
 - **2) Uninstall** stops the running app and removes it from the Startup
   folder, leaving nothing installed and nothing running.
 
