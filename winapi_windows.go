@@ -18,6 +18,7 @@ var (
 	modShell32  = windows.NewLazySystemDLL("shell32.dll")
 	modOle32    = windows.NewLazySystemDLL("ole32.dll")
 	modKernel32 = windows.NewLazySystemDLL("kernel32.dll")
+	modDwmapi   = windows.NewLazySystemDLL("dwmapi.dll")
 
 	procSetWindowsHookExW   = modUser32.NewProc("SetWindowsHookExW")
 	procUnhookWindowsHookEx = modUser32.NewProc("UnhookWindowsHookEx")
@@ -63,6 +64,8 @@ var (
 
 	procGetModuleHandleW   = modKernel32.NewProc("GetModuleHandleW")
 	procOutputDebugStringW = modKernel32.NewProc("OutputDebugStringW")
+
+	procDwmGetWindowAttribute = modDwmapi.NewProc("DwmGetWindowAttribute")
 )
 
 const (
@@ -302,10 +305,27 @@ func restoreWindow(hwnd uintptr) {
 
 const gaRoot = 2
 
+// dwmwaCloaked is DWMWA_CLOAKED: whether DWM is hiding the window and, if
+// so, why (app-requested, hidden by the shell, or inherited from its
+// owner). Windows increasingly hides windows this way -- notably windows
+// on a virtual desktop other than the current one -- rather than via
+// classic minimize, which IsIconic/IsWindowVisible don't observe at all.
+const dwmwaCloaked = 14
+
+// dwmCloakedState returns DWMWA_CLOAKED's raw value for hwnd: 0 if not
+// cloaked, otherwise a bitmask of DWM_CLOAKED_APP(0x1)/_SHELL(0x2)/
+// _INHERITED(0x4).
+func dwmCloakedState(hwnd uintptr) uint32 {
+	var cloaked uint32
+	procDwmGetWindowAttribute.Call(hwnd, uintptr(dwmwaCloaked), uintptr(unsafe.Pointer(&cloaked)), unsafe.Sizeof(cloaked))
+	return cloaked
+}
+
 // describeWindow formats diagnostic info about hwnd for debugLogf: whether
-// it still exists, its class name and title, visibility/iconic state, and
-// its root ancestor (in case hwnd is a child/owned window rather than the
-// true top-level window Explorer associates with a taskbar button).
+// it still exists, its class name and title, visibility/iconic/cloaked
+// state, and its root ancestor (in case hwnd is a child/owned window
+// rather than the true top-level window Explorer associates with a
+// taskbar button).
 func describeWindow(hwnd uintptr) string {
 	if hwnd == 0 {
 		return "hwnd=0x0"
@@ -313,6 +333,7 @@ func describeWindow(hwnd uintptr) string {
 	existsR, _, _ := procIsWindow.Call(hwnd)
 	visibleR, _, _ := procIsWindowVisible.Call(hwnd)
 	root, _, _ := procGetAncestor.Call(hwnd, uintptr(gaRoot))
+	cloaked := dwmCloakedState(hwnd)
 
 	classBuf := make([]uint16, 256)
 	classN, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&classBuf[0])), uintptr(len(classBuf)))
@@ -320,8 +341,8 @@ func describeWindow(hwnd uintptr) string {
 	titleN, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&titleBuf[0])), uintptr(len(titleBuf)))
 
 	return fmt.Sprintf(
-		"hwnd=0x%X exists=%v visible=%v iconic=%v root=0x%X class=%q title=%q",
-		hwnd, existsR != 0, visibleR != 0, isMinimized(hwnd), root,
+		"hwnd=0x%X exists=%v visible=%v iconic=%v cloaked=%d root=0x%X class=%q title=%q",
+		hwnd, existsR != 0, visibleR != 0, isMinimized(hwnd), cloaked, root,
 		syscall.UTF16ToString(classBuf[:classN]), syscall.UTF16ToString(titleBuf[:titleN]),
 	)
 }
