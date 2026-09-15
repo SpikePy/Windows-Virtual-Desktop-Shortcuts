@@ -285,14 +285,11 @@ func getForegroundWindow() uintptr {
 
 const swRestore = 9
 
-// restoreIfMinimized un-minimizes hwnd if (and only if) it's currently
-// minimized.
-func restoreIfMinimized(hwnd uintptr) {
-	if hwnd == 0 {
-		return
-	}
+func isMinimized(hwnd uintptr) bool {
 	r0, _, _ := procIsIconic.Call(hwnd)
-	if r0 != 0 {
-		procShowWindow.Call(hwnd, uintptr(swRestore))
-	}
+	return r0 != 0
+}
+
+func restoreWindow(hwnd uintptr) {
+	procShowWindow.Call(hwnd, uintptr(swRestore))
 }

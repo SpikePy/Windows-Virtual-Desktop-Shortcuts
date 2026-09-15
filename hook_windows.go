@@ -140,6 +140,9 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 				req := desktopRequest{
 					action: actionSwitchToDesktop,
 					index:  int(kb.VkCode - vk1), // 0-based
+					// Captured here, synchronously, rather than later by
+					// the switcher goroutine: see switchTo's doc comment.
+					hwndForeground: getForegroundWindow(),
 				}
 				if isKeyDown(vkShift) {
 					req.action = actionMoveWindowToDesktop

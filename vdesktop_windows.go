@@ -90,6 +90,14 @@ const (
 type desktopRequest struct {
 	action desktopAction
 	index  int // 0-based
+
+	// hwndForeground is the foreground window HWND as observed at the
+	// moment of the keypress, captured synchronously in the hook itself
+	// (see hook_windows.go) rather than re-queried later here -- by the
+	// time this request reaches the switcher goroutine, Explorer may
+	// already have reacted (see switchTo's doc comment) and moved focus
+	// elsewhere, making a late GetForegroundWindow() call unreliable.
+	hwndForeground uintptr
 }
 
 // runDesktopSwitcher processes desktop switch/move requests until the
@@ -121,7 +129,7 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 		case actionMoveWindowToDesktop:
 			err = sw.moveForegroundWindowTo(req.index)
 		default:
-			err = sw.switchTo(req.index)
+			err = sw.switchTo(req.index, req.hwndForeground)
 		}
 		if err != nil {
 			// This app has no console/UI for routine errors; surface them
@@ -193,10 +201,12 @@ func (sw *desktopSwitcher) desktopAt(managerInternal unsafe.Pointer, zeroBasedIn
 // no difference), strongly suggesting Explorer decides this via a raw
 // input registration rather than the message/hook-suppressible path. So
 // instead of trying to prevent it, this detects it happening right after
-// our own switch and undoes it.
-func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
-	hwndBefore := getForegroundWindow()
-
+// our own switch and undoes it. hwndBefore is the foreground window as
+// captured synchronously in the hook at keypress time (see
+// hook_windows.go); by the time this runs, Explorer may already have
+// acted and moved focus elsewhere, so re-querying it here would risk
+// checking/restoring the wrong window.
+func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) error {
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
 		return fmt.Errorf("create ImmersiveShell instance: %w", err)
@@ -223,15 +233,39 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
 	}
 
-	restoreIfMinimized(hwndBefore)
-	go func() {
-		// A second, delayed pass in case Explorer's minimize hasn't
-		// landed yet at the point above.
-		time.Sleep(250 * time.Millisecond)
-		restoreIfMinimized(hwndBefore)
-	}()
+	go pollRestoreIfMinimized(hwndBefore)
 
 	return nil
+}
+
+// pollRestoreIfMinimized checks hwnd repeatedly over about 1.5s,
+// restoring it the moment it's seen minimized and stopping there. A
+// single delayed check risks missing a minimize that lands slightly
+// later or earlier than expected; polling catches it whenever it
+// actually happens instead of guessing one specific delay.
+func pollRestoreIfMinimized(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	sleeps := []time.Duration{
+		0,
+		30 * time.Millisecond,
+		30 * time.Millisecond,
+		40 * time.Millisecond,
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		150 * time.Millisecond,
+		200 * time.Millisecond,
+		300 * time.Millisecond,
+		400 * time.Millisecond,
+	}
+	for _, d := range sleeps {
+		time.Sleep(d)
+		if isMinimized(hwnd) {
+			restoreWindow(hwnd)
+			return
+		}
+	}
 }
 
 // queryViewCollection fetches IApplicationViewCollection through the

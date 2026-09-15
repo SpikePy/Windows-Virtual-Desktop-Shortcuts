@@ -66,8 +66,12 @@ difference, which strongly suggests Explorer decides it via a raw input
 registration rather than the message/hook-suppressible path low-level
 hooks can intercept. So instead of trying to prevent it, `switchTo` in
 `vdesktop_windows.go` detects it happening right after its own desktop
-switch (checking whether the previously-focused window ended up
-minimized) and un-minimizes it.
+switch and un-minimizes it: the foreground window is captured
+synchronously in the hook at the moment of the keypress (`hook_windows.go`)
+-- not re-queried later on the switcher goroutine, since by then Explorer
+may already have acted and moved focus elsewhere -- and is then polled for
+up to ~1.5s after switching, restoring it the moment (if ever) it's seen
+minimized.
 
 Separately, this app also swallows the Win key's own key-up -- but only
 when it was actually used for one of our Win+<digit> combos during that
