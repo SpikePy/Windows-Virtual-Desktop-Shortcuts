@@ -14,9 +14,9 @@
 //   - Uninstall stops every running instance and removes the installed
 //     file, so nothing is left running or on disk.
 //
-// Install also turns off Explorer's own Win+1..9 taskbar shortcuts (the
-// DisabledHotkeys registry value), which the tool needs to work reliably,
-// and uninstall turns them back on. Explorer only reads that value at
+// Install also turns off Explorer's own Win+1..9 and Win+Left/Right
+// shortcuts (the DisabledHotkeys registry value), which the tool needs to
+// work reliably, and uninstall turns them back on. Explorer only reads that value at
 // startup, so it's restarted whenever the value actually changes.
 package main
 
@@ -49,9 +49,11 @@ const (
 
 	explorerAdvancedKey  = `Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced`
 	disabledHotkeysValue = "DisabledHotkeys"
-	// digitHotkeys are the characters added to DisabledHotkeys, one per
-	// Win+<char> shortcut Explorer should stop handling.
-	digitHotkeys = "123456789"
+	// hotkeyKeys are the characters added to DisabledHotkeys, one per
+	// Win+<key> shortcut Explorer should stop handling. Each character is
+	// the key's virtual-key code: '1'-'9' are the digit keys, '%' (0x25)
+	// is Left and '\'' (0x27) is Right.
+	hotkeyKeys = "123456789%'"
 )
 
 type release struct {
@@ -212,12 +214,12 @@ func installOrUpdate() error {
 	}
 	destPath := filepath.Join(startupDir, targetExeName)
 
-	changed, err := disableDigitHotkeys()
+	changed, err := disableExplorerHotkeys()
 	if err != nil {
-		return fmt.Errorf("turn off Explorer's Win+1..9 shortcuts: %w", err)
+		return fmt.Errorf("turn off Explorer's Win+1..9 and Win+Left/Right shortcuts: %w", err)
 	}
 	if changed {
-		fmt.Println("Turned off Explorer's own Win+1..9 taskbar shortcuts.")
+		fmt.Println("Turned off Explorer's own Win+1..9 and Win+Left/Right shortcuts.")
 		// The tool's tray icon doesn't survive Explorer restarting, so
 		// stop it first; it gets started again below.
 		killRunningInstances(targetExeName)
@@ -248,8 +250,8 @@ func installOrUpdate() error {
 }
 
 // uninstall stops every running instance of the tool, removes it from the
-// Startup folder and turns Explorer's own Win+1..9 shortcuts back on,
-// leaving nothing installed and nothing running.
+// Startup folder and turns Explorer's own shortcuts for the keys it uses
+// back on, leaving nothing installed and nothing running.
 func uninstall() error {
 	fmt.Println("\nStopping any running instance...")
 	killRunningInstances(targetExeName)
@@ -273,21 +275,21 @@ func uninstall() error {
 	// Clean up a stray temp file if a previous install/update was interrupted.
 	os.Remove(destPath + ".new")
 
-	changed, err := restoreDigitHotkeys()
+	changed, err := restoreExplorerHotkeys()
 	if err != nil {
-		return fmt.Errorf("turn Explorer's Win+1..9 shortcuts back on: %w", err)
+		return fmt.Errorf("turn Explorer's Win+1..9 and Win+Left/Right shortcuts back on: %w", err)
 	}
 	if changed {
-		fmt.Println("Turned Explorer's own Win+1..9 taskbar shortcuts back on.")
+		fmt.Println("Turned Explorer's own Win+1..9 and Win+Left/Right shortcuts back on.")
 		restartExplorer()
 	}
 	return nil
 }
 
-// disableDigitHotkeys adds the digits 1-9 to Explorer's DisabledHotkeys
+// disableExplorerHotkeys adds hotkeyKeys to Explorer's DisabledHotkeys
 // value, keeping any other characters already there, and reports whether
 // the value changed.
-func disableDigitHotkeys() (bool, error) {
+func disableExplorerHotkeys() (bool, error) {
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, explorerAdvancedKey, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
 		return false, err
@@ -299,7 +301,7 @@ func disableDigitHotkeys() (bool, error) {
 		return false, err
 	}
 	updated := current
-	for _, c := range digitHotkeys {
+	for _, c := range hotkeyKeys {
 		if !strings.ContainsRune(updated, c) {
 			updated += string(c)
 		}
@@ -310,10 +312,10 @@ func disableDigitHotkeys() (bool, error) {
 	return true, k.SetStringValue(disabledHotkeysValue, updated)
 }
 
-// restoreDigitHotkeys removes the digits 1-9 from Explorer's
+// restoreExplorerHotkeys removes hotkeyKeys from Explorer's
 // DisabledHotkeys value, deleting the value if nothing else is left, and
 // reports whether it changed.
-func restoreDigitHotkeys() (bool, error) {
+func restoreExplorerHotkeys() (bool, error) {
 	k, err := registry.OpenKey(registry.CURRENT_USER, explorerAdvancedKey, registry.QUERY_VALUE|registry.SET_VALUE)
 	if errors.Is(err, registry.ErrNotExist) {
 		return false, nil
@@ -329,7 +331,7 @@ func restoreDigitHotkeys() (bool, error) {
 		return false, err
 	}
 	updated := strings.Map(func(r rune) rune {
-		if strings.ContainsRune(digitHotkeys, r) {
+		if strings.ContainsRune(hotkeyKeys, r) {
 			return -1
 		}
 		return r

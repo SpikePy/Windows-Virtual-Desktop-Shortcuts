@@ -10,8 +10,9 @@ import (
 )
 
 // keyboardHook manages the low-level keyboard hook used to intercept
-// Win+1..Win+9 (switch to desktop N) and Win+Shift+1..Win+Shift+9 (move
-// the foreground window to desktop N).
+// Win+1..Win+9 (switch to desktop N), Win+Left/Right (switch to the
+// previous/next desktop), and the same with Shift (move the foreground
+// window there instead).
 //
 // RegisterHotKey cannot be used here: Win+<digit> is reserved by the shell
 // for launching pinned taskbar apps, and the OS refuses to let normal
@@ -83,10 +84,10 @@ func keyDirection(down bool) string {
 }
 
 // lowLevelKeyboardProc is the WH_KEYBOARD_LL hook procedure. It must return
-// quickly: it only classifies the keystroke and, if it is a plain
-// Win+<digit> or Win+Shift+<digit> combination, hands the request off to
-// the switcher goroutine over a non-blocking channel send before
-// swallowing both the digit's key-down and key-up.
+// quickly: it only classifies the keystroke and, if it is one of the
+// shortcuts (see shortcutFor), hands the request off to the switcher
+// goroutine over a non-blocking channel send before swallowing both the
+// key's key-down and key-up.
 func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintptr {
 	isDown := wParam == wmKeyDown || wParam == wmSysKeyDown
 	isUp := wParam == wmKeyUp || wParam == wmSysKeyUp
@@ -105,32 +106,33 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 			kb.VkCode-vk1+1, keyDirection(isDown), winKeyHeld(), isKeyDown(vkControl),
 			isKeyDown(vkMenu), isKeyDown(vkShift), kb.Flags&llkhfInjected != 0)
 	}
-	if !hotkeysEnabled.Load() || kb.VkCode < vk1 || kb.VkCode > vk9 {
+	if !hotkeysEnabled.Load() {
 		return h.callNext(nCode, wParam, lParam)
 	}
-	// Ctrl and Alt are left alone so other Win+Ctrl/Win+Alt combinations
-	// keep working; Shift toggles switch vs. move.
+	req, ok := shortcutFor(kb.VkCode)
+	if !ok {
+		return h.callNext(nCode, wParam, lParam)
+	}
+	// Ctrl and Alt are left alone so other Win+Ctrl/Win+Alt combinations,
+	// like Windows' own Win+Ctrl+Left/Right desktop switching, keep
+	// working; Shift toggles switch vs. move.
 	if !winKeyHeld() || isKeyDown(vkControl) || isKeyDown(vkMenu) {
 		return h.callNext(nCode, wParam, lParam)
 	}
 
 	if isDown {
-		req := desktopRequest{
-			action: actionSwitchToDesktop,
-			index:  int(kb.VkCode - vk1), // 0-based
-		}
 		if isKeyDown(vkShift) {
 			req.action = actionMoveWindowToDesktop
 		}
-		debugLogf("hook: Win+%d (action %d)", req.index+1, req.action)
+		debugLogf("hook: Win+%s (action %d)", keyName(kb.VkCode), req.action)
 		select {
 		case h.requests <- req:
 		default:
 			// Switcher is busy; drop the request rather than blocking
 			// this hook callback.
-			debugLogf("hook: switcher busy, dropped Win+%d", req.index+1)
+			debugLogf("hook: switcher busy, dropped Win+%s", keyName(kb.VkCode))
 		}
-		// With the digit swallowed, Windows would see Win pressed and
+		// With the key swallowed, Windows would see Win pressed and
 		// released on its own and open the Start menu. Tapping an
 		// unassigned key while Win is still held prevents that (the same
 		// "menu mask key" trick AutoHotkey uses) without touching the Win
@@ -138,4 +140,28 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 		sendKeyTap(vkMenuMask)
 	}
 	return 1
+}
+
+// shortcutFor maps a key pressed together with Win to the desktop it
+// targets: 1-9 pick a desktop by number, Left/Right the previous/next one.
+func shortcutFor(vk uint32) (desktopRequest, bool) {
+	switch {
+	case vk >= vk1 && vk <= vk9:
+		return desktopRequest{index: int(vk - vk1)}, true
+	case vk == vkLeft:
+		return desktopRequest{index: -1, relative: true}, true
+	case vk == vkRight:
+		return desktopRequest{index: 1, relative: true}, true
+	}
+	return desktopRequest{}, false
+}
+
+func keyName(vk uint32) string {
+	switch vk {
+	case vkLeft:
+		return "Left"
+	case vkRight:
+		return "Right"
+	}
+	return string(rune(vk))
 }

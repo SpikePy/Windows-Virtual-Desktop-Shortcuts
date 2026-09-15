@@ -2,38 +2,43 @@
 
 A tiny Windows-only background utility that lets you jump straight to the
 Nth virtual desktop with **Win+1** through **Win+9** (the same way
-`Win+1..9` already jumps to the Nth pinned taskbar app), and move the
-focused window to the Nth virtual desktop with **Win+Shift+1** through
-**Win+Shift+9**.
+`Win+1..9` already jumps to the Nth pinned taskbar app) or to the
+previous/next one with **Win+Left**/**Win+Right**, and move the focused
+window there by adding **Shift**.
 
-- `Win+1` → switch to virtual desktop 1
-- `Win+2` → switch to virtual desktop 2
-- ...
-- `Win+9` → switch to virtual desktop 9
-- `Win+Shift+1` → move the focused window to virtual desktop 1 (without
-  switching to it)
-- ...
-- `Win+Shift+9` → move the focused window to virtual desktop 9
+- `Win+1` … `Win+9` → switch to virtual desktop 1 … 9
+- `Win+Shift+1` … `Win+Shift+9` → move the focused window to virtual
+  desktop 1 … 9 (without switching to it)
+- `Win+Left` / `Win+Right` → switch to the previous / next virtual desktop
+- `Win+Shift+Left` / `Win+Shift+Right` → move the focused window to the
+  previous / next virtual desktop and switch along with it, so pressing it
+  again keeps moving the same window
 
-If the desktop doesn't exist (e.g. you press `Win+5` or `Win+Shift+5` but
-only have 3 desktops), the shortcut is a no-op — it does not create a new
-desktop, and moving with no window focused is also a no-op.
+If the desktop doesn't exist (e.g. you press `Win+5` but only have 3
+desktops, or `Win+Right` on the last one), the shortcut is a no-op — it
+does not create a new desktop or wrap around, and moving with no window
+focused is also a no-op. These replace Windows' own `Win+Left`/`Win+Right`
+(snap the window to one side) and `Win+Shift+Left`/`Win+Shift+Right` (move
+the window to another monitor); `Win+Ctrl+Left`/`Win+Ctrl+Right` are left
+to Windows.
 
-**Explorer's own Win+1..9 shortcuts:** Explorer uses Win+1..9 to open
-pinned taskbar apps, and this app can't fully override that (see
-[below](#how-it-works-and-why-its-fragile)): without turning it off, Win+N
-minimizes the focused app instead of switching when that app is pinned at
-taskbar position N. `Setup_VirtualDesktopShortcuts.exe` turns it off when
-installing (by adding `123456789` to Explorer's `DisabledHotkeys` registry
-value) and back on when uninstalling, restarting Explorer whenever the
-value changes. While it's off, Win+1..9 doesn't open pinned taskbar apps,
-even if this app is disabled or not running.
+**Explorer's own shortcuts on these keys:** Explorer uses Win+1..9 to open
+pinned taskbar apps and Win+Left/Right to snap windows, and this app can't
+fully override that (see [below](#how-it-works-and-why-its-fragile)):
+without turning it off, Win+N minimizes the focused app instead of
+switching when that app is pinned at taskbar position N.
+`Setup_VirtualDesktopShortcuts.exe` turns these shortcuts off when
+installing, by adding `123456789%'` to Explorer's `DisabledHotkeys`
+registry value (each character is a key's virtual-key code; `%` is Left
+and `'` is Right), and back on when uninstalling, restarting Explorer
+whenever the value changes. While they're off, Windows doesn't act on
+those keys itself, even if this app is disabled or not running.
 
 If you don't use the Setup tool, set it by hand, then restart Explorer or
 sign out and back in:
 
 ```
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisabledHotkeys /t REG_SZ /d 123456789 /f
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisabledHotkeys /t REG_SZ /d "123456789%'" /f
 ```
 
 and undo it with:
@@ -74,10 +79,12 @@ IDs for each, but a future Windows feature update could still break it.
 Similarly, `Win+<digit>` is a shortcut reserved by Explorer for launching,
 switching to, or (if it's already the active window) minimizing the Nth
 pinned taskbar app, so the OS refuses to let a normal app register it with
-`RegisterHotKey`. Instead this app installs a low-level keyboard hook
-(`WH_KEYBOARD_LL`) that swallows the digit's key-down and key-up for
-Win+digit and Win+Shift+digit; Ctrl or Alt held down with the digit is
-left alone, so combinations like Ctrl+Win+3 keep working normally. While
+`RegisterHotKey` (the same goes for Win+Left/Right, used for snapping).
+Instead this app installs a low-level keyboard hook (`WH_KEYBOARD_LL`) that
+swallows the key-down and key-up of the digit or arrow for these shortcuts,
+with or without Shift; Ctrl or Alt held down with the key is left alone,
+so combinations like Ctrl+Win+3 and Windows' own Ctrl+Win+Left/Right keep
+working normally. While
 Win is still held it also taps an unassigned virtual key (0xE8), the same
 "menu mask key" trick AutoHotkey uses, so releasing Win doesn't open the
 Start menu.
@@ -88,7 +95,7 @@ position is already focused, it minimizes the app instead of letting the
 desktop switch. Swallowing the Win key's own key-up and trying to
 un-minimize the app afterwards were both tried and neither helped. The
 fix is the `DisabledHotkeys` setting described above, which
-stops Explorer from handling Win+1..9 at all.
+stops Explorer from handling these keys at all.
 
 Moving a window to a desktop *could* use the one piece of this that's a
 documented, public API — `IVirtualDesktopManager::MoveWindowToDesktop` —

@@ -73,6 +73,8 @@ const (
 	vkMenu    = 0x12
 	vk1       = 0x31
 	vk9       = 0x39
+	vkLeft    = 0x25
+	vkRight   = 0x27
 	// vkMenuMask is an unassigned virtual-key code, used purely as a
 	// harmless keystroke to inject (see lowLevelKeyboardProc).
 	vkMenuMask = 0xE8

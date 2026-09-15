@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"runtime"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -80,33 +79,22 @@ func guid(s string) *windows.GUID {
 type desktopSwitcher struct {
 	iidManagerInternal *windows.GUID
 	iidVirtualDesktop  *windows.GUID
-	// requests lets switchTo stop re-checking a switch as soon as a newer
-	// request is waiting.
-	requests <-chan desktopRequest
 }
-
-// After switching, switchTo keeps checking that the view is still on the
-// target desktop while Win is held and for switchCheckWindow after it's
-// released (at most maxSwitchCheck in total), and switches again (at most
-// maxSwitchRetries times) if it isn't. See switchTo for why.
-const (
-	switchCheckWindow   = 750 * time.Millisecond
-	switchCheckInterval = 50 * time.Millisecond
-	maxSwitchCheck      = 5 * time.Second
-	maxSwitchRetries    = 3
-)
 
 // desktopAction identifies what a hotkey-triggered request should do.
 type desktopAction int
 
 const (
-	actionSwitchToDesktop     desktopAction = iota // Win+N
-	actionMoveWindowToDesktop                      // Win+Shift+N
+	actionSwitchToDesktop     desktopAction = iota // Win+N, Win+Left/Right
+	actionMoveWindowToDesktop                      // Win+Shift+N, Win+Shift+Left/Right
 )
 
 type desktopRequest struct {
 	action desktopAction
-	index  int // 0-based
+	// index is the 0-based target desktop or, with relative set, an offset
+	// from the current desktop (-1 previous, +1 next).
+	index    int
+	relative bool
 }
 
 // runDesktopSwitcher processes desktop switch/move requests until the
@@ -126,7 +114,6 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 	sw := &desktopSwitcher{
 		iidManagerInternal: iidVirtualDesktopManagerInternalWin10,
 		iidVirtualDesktop:  iidVirtualDesktopWin10,
-		requests:           requests,
 	}
 	if ver.BuildNumber >= 22000 {
 		sw.iidManagerInternal = iidVirtualDesktopManagerInternalWin11
@@ -134,19 +121,49 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 	}
 
 	for req := range requests {
-		var err error
-		switch req.action {
-		case actionMoveWindowToDesktop:
-			err = sw.moveForegroundWindowTo(req.index)
-		default:
-			err = sw.switchTo(req.index)
-		}
-		if err != nil {
+		if err := sw.handle(req); err != nil {
 			// This app has no console/UI for routine errors; surface them
 			// via OutputDebugString (visible in DebugView or a debugger)
 			// instead of silently discarding them.
 			debugLogf("request %+v failed: %v", req, err)
 		}
+	}
+}
+
+// handle resolves a request's target desktop and carries it out. Relative
+// requests past the first or last desktop do nothing.
+func (sw *desktopSwitcher) handle(req desktopRequest) error {
+	index := req.index
+	if req.relative {
+		current, err := sw.currentDesktopIndex()
+		if err != nil {
+			return err
+		}
+		index += current
+		if index < 0 {
+			return nil
+		}
+	}
+
+	switch {
+	case req.action == actionSwitchToDesktop:
+		return sw.switchTo(index)
+	case !req.relative:
+		_, err := sw.moveWindowTo(getForegroundWindow(), index)
+		return err
+	default:
+		// Win+Shift+Left/Right takes the window along and keeps it
+		// focused, so pressing it again keeps moving the same window.
+		hwnd := getForegroundWindow()
+		moved, err := sw.moveWindowTo(hwnd, index)
+		if err != nil || !moved {
+			return err
+		}
+		if err := sw.switchTo(index); err != nil {
+			return err
+		}
+		procSetForegroundWnd.Call(hwnd)
+		return nil
 	}
 }
 
@@ -221,15 +238,62 @@ func currentDesktopID(managerInternal unsafe.Pointer) (windows.GUID, error) {
 	return desktopID(desktop)
 }
 
+// currentDesktopIndex returns the zero-based index of the desktop
+// currently shown.
+func (sw *desktopSwitcher) currentDesktopIndex() (int, error) {
+	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
+	if err != nil {
+		return 0, fmt.Errorf("create ImmersiveShell instance: %w", err)
+	}
+	defer comRelease(provider)
+
+	managerInternal, err := sw.queryManagerInternal(provider)
+	if err != nil {
+		return 0, err
+	}
+	defer comRelease(managerInternal)
+
+	currentID, err := currentDesktopID(managerInternal)
+	if err != nil {
+		return 0, err
+	}
+
+	var objArray unsafe.Pointer
+	hr := comCall(managerInternal, slotManagerInternalGetDesktops, uintptr(unsafe.Pointer(&objArray)))
+	if hrFailed(hr) || objArray == nil {
+		return 0, fmt.Errorf("get_desktops: hr=0x%08X", uint32(hr))
+	}
+	defer comRelease(objArray)
+
+	var count uint32
+	hr = comCall(objArray, slotObjectArrayGetCount, uintptr(unsafe.Pointer(&count)))
+	if hrFailed(hr) {
+		return 0, fmt.Errorf("IObjectArray::GetCount: hr=0x%08X", uint32(hr))
+	}
+	for i := uint32(0); i < count; i++ {
+		var desktop unsafe.Pointer
+		hr = comCall(objArray, slotObjectArrayGetAt,
+			uintptr(i),
+			uintptr(unsafe.Pointer(sw.iidVirtualDesktop)),
+			uintptr(unsafe.Pointer(&desktop)),
+		)
+		if hrFailed(hr) || desktop == nil {
+			return 0, fmt.Errorf("IObjectArray::GetAt(%d): hr=0x%08X", i, uint32(hr))
+		}
+		id, err := desktopID(desktop)
+		comRelease(desktop)
+		if err != nil {
+			return 0, err
+		}
+		if id == currentID {
+			return int(i), nil
+		}
+	}
+	return 0, fmt.Errorf("current desktop not found among %d desktops", count)
+}
+
 // switchTo switches to the desktop at the given zero-based index. If no
-// such desktop exists, it does nothing (returns nil).
-//
-// When the app pinned at taskbar position N is focused, Explorer can still
-// react to Win+N by reactivating that app after the switch -- possibly
-// only once Win is released -- which pulls the view back to the app's
-// desktop. So until shortly after Win is released, this checks the
-// current desktop and switches again if the view has left the target.
-// Each step is logged to the debug output.
+// such desktop exists, or it's already the current one, it does nothing.
 func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
@@ -252,17 +316,16 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	}
 	defer comRelease(desktop)
 
-	n := zeroBasedIndex + 1
 	targetID, err := desktopID(desktop)
 	if err != nil {
 		return err
 	}
-	startID, err := currentDesktopID(managerInternal)
+	currentID, err := currentDesktopID(managerInternal)
 	if err != nil {
 		return err
 	}
-	debugLogf("switchTo(%d): on %s, target %s", n, shortID(startID), shortID(targetID))
-	if startID == targetID {
+	debugLogf("switchTo(%d): on %s, target %s", zeroBasedIndex+1, shortID(currentID), shortID(targetID))
+	if currentID == targetID {
 		return nil
 	}
 
@@ -270,40 +333,6 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	if hrFailed(hr) {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
 	}
-
-	start := time.Now()
-	checkUntil := start.Add(switchCheckWindow)
-	lastSeen := startID
-	retries := 0
-	for time.Now().Before(checkUntil) && time.Since(start) < maxSwitchCheck && len(sw.requests) == 0 {
-		time.Sleep(switchCheckInterval)
-		winHeld := winKeyHeld()
-		if winHeld {
-			checkUntil = time.Now().Add(switchCheckWindow)
-		}
-		current, err := currentDesktopID(managerInternal)
-		if err != nil {
-			return err
-		}
-		if current != lastSeen {
-			debugLogf("switchTo(%d): +%v now on %s (Win held: %v)", n, time.Since(start).Round(time.Millisecond), shortID(current), winHeld)
-			lastSeen = current
-		}
-		if current == targetID {
-			continue
-		}
-		if retries == maxSwitchRetries {
-			return fmt.Errorf("view kept leaving desktop %d after %d re-switches", n, retries)
-		}
-		retries++
-		debugLogf("switchTo(%d): switching again (%d/%d)", n, retries, maxSwitchRetries)
-		hr := comCall(managerInternal, slotManagerInternalSwitchDesktop, uintptr(desktop))
-		if hrFailed(hr) {
-			return fmt.Errorf("switch_desktop (retry %d): hr=0x%08X", retries, uint32(hr))
-		}
-	}
-	debugLogf("switchTo(%d): stopped checking after %v on %s, %d re-switches",
-		n, time.Since(start).Round(time.Millisecond), shortID(lastSeen), retries)
 	return nil
 }
 
@@ -340,9 +369,9 @@ func viewForHwnd(viewCollection unsafe.Pointer, hwnd uintptr) (unsafe.Pointer, e
 	return view, nil
 }
 
-// moveForegroundWindowTo moves the current foreground window to the
-// desktop at the given zero-based index, without switching to it. If no
-// such desktop exists, or there's no foreground window, it does nothing.
+// moveWindowTo moves hwnd to the desktop at the given zero-based index,
+// without switching to it, and reports whether it did. If no such desktop
+// exists, or hwnd is 0, it does nothing.
 //
 // This deliberately does NOT use the public, documented
 // IVirtualDesktopManager::MoveWindowToDesktop: in practice it reliably
@@ -352,50 +381,49 @@ func viewForHwnd(viewCollection unsafe.Pointer, hwnd uintptr) (unsafe.Pointer, e
 // undocumented move_view_to_desktop, operating on an IApplicationView
 // instead of a raw HWND, is what actually works -- the same approach real
 // tools (e.g. VirtualDesktopAccessor) use for exactly this reason.
-func (sw *desktopSwitcher) moveForegroundWindowTo(zeroBasedIndex int) error {
-	hwnd := getForegroundWindow()
+func (sw *desktopSwitcher) moveWindowTo(hwnd uintptr, zeroBasedIndex int) (bool, error) {
 	if hwnd == 0 {
-		return nil
+		return false, nil
 	}
 
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
-		return fmt.Errorf("create ImmersiveShell instance: %w", err)
+		return false, fmt.Errorf("create ImmersiveShell instance: %w", err)
 	}
 	defer comRelease(provider)
 
 	managerInternal, err := sw.queryManagerInternal(provider)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer comRelease(managerInternal)
 
 	desktop, err := sw.desktopAt(managerInternal, zeroBasedIndex)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if desktop == nil {
-		return nil
+		return false, nil
 	}
 	defer comRelease(desktop)
 
 	viewCollection, err := sw.queryViewCollection(provider)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer comRelease(viewCollection)
 
 	view, err := viewForHwnd(viewCollection, hwnd)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer comRelease(view)
 
 	hr := comCall(managerInternal, slotManagerInternalMoveViewToDesktop, uintptr(view), uintptr(desktop))
 	if hrFailed(hr) {
-		return fmt.Errorf("move_view_to_desktop: hr=0x%08X", uint32(hr))
+		return false, fmt.Errorf("move_view_to_desktop: hr=0x%08X", uint32(hr))
 	}
-	return nil
+	return true, nil
 }
 
 func coCreateInstance(clsid *windows.GUID, clsCtx uint32, iid *windows.GUID) (unsafe.Pointer, error) {
