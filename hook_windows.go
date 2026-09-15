@@ -3,7 +3,9 @@
 package main
 
 import (
+	"fmt"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -97,12 +99,19 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 	}
 	kb := (*kbdllhookstruct)(unsafe.Pointer(lParam))
 
+	start := time.Now()
+	defer func() {
+		if d := time.Since(start); d > hookSlowThreshold {
+			hookLogf("hook: handling key 0x%X took %v", kb.VkCode, d.Round(time.Millisecond))
+		}
+	}()
+
 	if (kb.VkCode == vkLWin || kb.VkCode == vkRWin) && isDown != h.winDownSeen {
 		h.winDownSeen = isDown
-		debugLogf("hook: Win %s", keyDirection(isDown))
+		hookLogf("hook: Win %s", keyDirection(isDown))
 	}
 	if kb.VkCode >= vk1 && kb.VkCode <= vk9 {
-		debugLogf("hook: key %d %s (Win held: %v, Ctrl: %v, Alt: %v, Shift: %v, injected: %v)",
+		hookLogf("hook: key %d %s (Win held: %v, Ctrl: %v, Alt: %v, Shift: %v, injected: %v)",
 			kb.VkCode-vk1+1, keyDirection(isDown), winKeyHeld(), isKeyDown(vkControl),
 			isKeyDown(vkMenu), isKeyDown(vkShift), kb.Flags&llkhfInjected != 0)
 	}
@@ -124,22 +133,44 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 		if isKeyDown(vkShift) {
 			req.action = actionMoveWindowToDesktop
 		}
-		debugLogf("hook: Win+%s (action %d)", keyName(kb.VkCode), req.action)
+		hookLogf("hook: Win+%s (action %d)", keyName(kb.VkCode), req.action)
 		select {
 		case h.requests <- req:
 		default:
 			// Switcher is busy; drop the request rather than blocking
 			// this hook callback.
-			debugLogf("hook: switcher busy, dropped Win+%s", keyName(kb.VkCode))
+			hookLogf("hook: switcher busy, dropped Win+%s", keyName(kb.VkCode))
 		}
-		// With the key swallowed, Windows would see Win pressed and
-		// released on its own and open the Start menu. Tapping an
-		// unassigned key while Win is still held prevents that (the same
-		// "menu mask key" trick AutoHotkey uses) without touching the Win
-		// key's own key-up.
-		sendKeyTap(vkMenuMask)
 	}
 	return 1
+}
+
+// hookSlowThreshold is how long a hook call may take before it's logged.
+// If the hook procedure runs past LowLevelHooksTimeout, Windows ignores
+// its result and passes the key on anyway (and eventually removes the
+// hook), so slow calls are worth knowing about.
+const hookSlowThreshold = 20 * time.Millisecond
+
+// hookLogs carries log lines from the hook procedure to a goroutine that
+// writes them, so the hook never waits on OutputDebugString, which blocks
+// until a debugger such as DebugView has taken each line.
+var hookLogs = make(chan string, 64)
+
+func init() {
+	go func() {
+		for line := range hookLogs {
+			debugLogf("%s", line)
+		}
+	}()
+}
+
+// hookLogf queues a log line from the hook procedure, dropping it if the
+// queue is full rather than blocking.
+func hookLogf(format string, args ...any) {
+	select {
+	case hookLogs <- fmt.Sprintf(format, args...):
+	default:
+	}
 }
 
 // shortcutFor maps a key pressed together with Win to the desktop it
