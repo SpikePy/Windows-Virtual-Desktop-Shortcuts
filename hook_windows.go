@@ -28,6 +28,10 @@ type keyboardHook struct {
 	// been used for one of our Win+<digit> combos, so its eventual key-up
 	// can also be swallowed. See the note on winKeyUp handling below.
 	winUsedForCombo bool
+	// winPhysicallyDown distinguishes a genuine fresh Win key-down from
+	// one of its auto-repeat key-downs while held, so winUsedForCombo only
+	// resets at the start of an actual new press-and-hold cycle.
+	winPhysicallyDown bool
 }
 
 func newKeyboardHook(requests chan<- desktopRequest) *keyboardHook {
@@ -85,6 +89,12 @@ func isKeyDown(vk int) bool {
 // its current hold, so we can swallow the Win key's key-up too in that
 // case -- but only that case, so a plain Win tap still opens the Start
 // Menu normally.
+//
+// Swallowing Win's own key-up would otherwise leave anything downstream
+// of this hook (Explorer included) thinking Win is still held, since they
+// never see it released -- so a synthetic key-up is injected via
+// SendInput right after, letting that state settle correctly without
+// giving Explorer's own pinned-app handling a real event to act on.
 func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintptr {
 	isDown := wParam == wmKeyDown || wParam == wmSysKeyDown
 	isUp := wParam == wmKeyUp || wParam == wmSysKeyUp
@@ -96,10 +106,17 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 
 	if kb.VkCode == vkLWin || kb.VkCode == vkRWin {
 		if isDown {
-			h.winUsedForCombo = false // fresh press-and-hold cycle
-		} else if h.winUsedForCombo {
-			h.winUsedForCombo = false
-			return 1 // swallow: see winUsedForCombo doc above
+			if !h.winPhysicallyDown {
+				h.winUsedForCombo = false // genuine fresh press, not an auto-repeat
+			}
+			h.winPhysicallyDown = true
+		} else {
+			h.winPhysicallyDown = false
+			if h.winUsedForCombo {
+				h.winUsedForCombo = false
+				sendKeyUp(uint16(kb.VkCode))
+				return 1 // swallow: see winUsedForCombo doc above
+			}
 		}
 		return h.callNext(nCode, wParam, lParam)
 	}

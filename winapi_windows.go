@@ -23,6 +23,7 @@ var (
 	procCallNextHookEx      = modUser32.NewProc("CallNextHookEx")
 	procGetAsyncKeyState    = modUser32.NewProc("GetAsyncKeyState")
 	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
+	procSendInput           = modUser32.NewProc("SendInput")
 
 	procRegisterClassExW = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW  = modUser32.NewProc("CreateWindowExW")
@@ -111,10 +112,44 @@ const (
 	mbOK        = 0x00000000
 
 	clsctxLocalServer = 0x4
+
+	inputKeyboard  = 1
+	keyeventfKeyUp = 0x0002
 )
 
 type point struct {
 	X, Y int32
+}
+
+// input mirrors the Win32 INPUT struct (winuser.h) for the keyboard
+// (INPUT_KEYBOARD) case only, laid out to match the real x64 ABI size (40
+// bytes: an 8-byte header, unioned with up to a 32-byte MOUSEINPUT) even
+// though only the KEYBDINPUT fields are ever populated -- SendInput
+// validates the caller's struct size against its own sizeof(INPUT) and
+// fails outright on a mismatch.
+type input struct {
+	inputType uint32
+	_         uint32 // pad to 8-byte-align the union, matching the C layout
+	wVk       uint16
+	wScan     uint16
+	dwFlags   uint32
+	time      uint32
+	extraInfo uintptr
+	_         [8]byte // pad the union out to MOUSEINPUT's size
+}
+
+// sendKeyUp injects a synthetic key-up for vk via SendInput. Used to make
+// sure a key we've swallowed the real key-up of (see winUsedForCombo in
+// hook_windows.go) is still eventually seen as released by everything
+// downstream of this hook -- otherwise their notion of that key's state
+// can get stuck "down".
+func sendKeyUp(vk uint16) {
+	in := input{
+		inputType: inputKeyboard,
+		wVk:       vk,
+		dwFlags:   keyeventfKeyUp,
+	}
+	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
 }
 
 type msg struct {

@@ -63,9 +63,13 @@ key-up (checking low-level key state at that point, not off receiving the
 digit key's message), so this app also swallows the Win key's key-up --
 but only when it was actually used for one of our Win+<digit> combos
 during that hold, so a plain tap of Win still opens the Start Menu
-normally. As long as this app is running (and not Disabled from the
-tray), Win+1..9 only switches/moves desktops and never touches a taskbar
-app.
+normally. Swallowing that key-up outright would otherwise leave
+everything downstream of this hook (Explorer included) thinking Win was
+still held, since they'd never see it released -- so a synthetic key-up
+is injected via `SendInput` right after, letting that state settle
+correctly without giving Explorer's own handling a real event to act on.
+As long as this app is running (and not Disabled from the tray), Win+1..9
+only switches/moves desktops and never touches a taskbar app.
 
 Moving a window to a desktop *could* use the one piece of this that's a
 documented, public API — `IVirtualDesktopManager::MoveWindowToDesktop` —
