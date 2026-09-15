@@ -32,8 +32,9 @@ var (
 	procIsWindowVisible     = modUser32.NewProc("IsWindowVisible")
 	procGetClassNameW       = modUser32.NewProc("GetClassNameW")
 	procGetWindowTextW      = modUser32.NewProc("GetWindowTextW")
-	procGetWindowThreadPID  = modUser32.NewProc("GetWindowThreadProcessId")
 	procGetAncestor         = modUser32.NewProc("GetAncestor")
+	procSetWinEventHook     = modUser32.NewProc("SetWinEventHook")
+	procUnhookWinEvent      = modUser32.NewProc("UnhookWinEvent")
 
 	procRegisterClassExW = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW  = modUser32.NewProc("CreateWindowExW")
@@ -321,6 +322,12 @@ func dwmCloakedState(hwnd uintptr) uint32 {
 	return cloaked
 }
 
+func windowClassName(hwnd uintptr) string {
+	buf := make([]uint16, 256)
+	n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf[:n])
+}
+
 // describeWindow formats diagnostic info about hwnd for debugLogf: whether
 // it still exists, its class name and title, visibility/iconic/cloaked
 // state, and its root ancestor (in case hwnd is a child/owned window
@@ -334,15 +341,14 @@ func describeWindow(hwnd uintptr) string {
 	visibleR, _, _ := procIsWindowVisible.Call(hwnd)
 	root, _, _ := procGetAncestor.Call(hwnd, uintptr(gaRoot))
 	cloaked := dwmCloakedState(hwnd)
+	class := windowClassName(hwnd)
 
-	classBuf := make([]uint16, 256)
-	classN, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&classBuf[0])), uintptr(len(classBuf)))
 	titleBuf := make([]uint16, 256)
 	titleN, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&titleBuf[0])), uintptr(len(titleBuf)))
 
 	return fmt.Sprintf(
 		"hwnd=0x%X exists=%v visible=%v iconic=%v cloaked=%d root=0x%X class=%q title=%q",
 		hwnd, existsR != 0, visibleR != 0, isMinimized(hwnd), cloaked, root,
-		syscall.UTF16ToString(classBuf[:classN]), syscall.UTF16ToString(titleBuf[:titleN]),
+		class, syscall.UTF16ToString(titleBuf[:titleN]),
 	)
 }

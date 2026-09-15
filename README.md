@@ -66,12 +66,20 @@ difference, which strongly suggests Explorer decides it via a raw input
 registration rather than the message/hook-suppressible path low-level
 hooks can intercept. So instead of trying to prevent it, `switchTo` in
 `vdesktop_windows.go` detects it happening right after its own desktop
-switch and un-minimizes it: the foreground window is captured
-synchronously in the hook at the moment of the keypress (`hook_windows.go`)
--- not re-queried later on the switcher goroutine, since by then Explorer
-may already have acted and moved focus elsewhere -- and is then polled for
-up to ~1.5s after switching, restoring it the moment (if ever) it's seen
-minimized.
+switch and un-minimizes it -- polling the previously-focused window for
+up to ~1.5s after switching and restoring it the moment (if ever) it's
+seen minimized.
+
+Getting a reliable handle on "the previously-focused window" in the first
+place turned out to be its own problem: `GetForegroundWindow()`, queried
+at any point after Win goes down -- even at Win's own key-down, the
+earliest this app can act at all -- can already return Explorer's desktop
+window ("Progman") instead of the real app, because holding Win shifts
+the foreground window there essentially synchronously. `focus_windows.go`
+sidesteps this with a `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND` that
+passively tracks the last foreground window that *isn't* the desktop
+shell, updated continuously in the background rather than queried at any
+single instant -- so there's no race to lose, regardless of timing.
 
 Separately, this app also swallows the Win key's own key-up -- but only
 when it was actually used for one of our Win+<digit> combos during that

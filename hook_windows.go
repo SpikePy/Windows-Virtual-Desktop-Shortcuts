@@ -40,16 +40,6 @@ type keyboardHook struct {
 	// one of its auto-repeat key-downs while held, so winUsedForCombo only
 	// resets at the start of an actual new press-and-hold cycle.
 	winPhysicallyDown bool
-	// winKeyDownForeground is GetForegroundWindow() captured at the
-	// instant Win itself first goes down, before any digit is pressed.
-	// Capturing it here, rather than later at the digit's own key-down,
-	// matters: holding Win briefly shifts the foreground window to
-	// Explorer's desktop ("Progman") before it settles back on the real
-	// app a short (but inconsistent, sometimes tens of milliseconds)
-	// moment later, so capturing any later than absolutely necessary
-	// risks landing in that transient window and grabbing the wrong HWND
-	// entirely -- confirmed happening intermittently in practice.
-	winKeyDownForeground uintptr
 }
 
 func newKeyboardHook(requests chan<- desktopRequest) *keyboardHook {
@@ -128,7 +118,6 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 		if isDown {
 			if !h.winPhysicallyDown {
 				h.winUsedForCombo = false // genuine fresh press, not an auto-repeat
-				h.winKeyDownForeground = getForegroundWindow()
 			}
 			h.winPhysicallyDown = true
 		} else {
@@ -151,9 +140,9 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 				req := desktopRequest{
 					action: actionSwitchToDesktop,
 					index:  int(kb.VkCode - vk1), // 0-based
-					// Captured when Win itself first went down, not now:
-					// see winKeyDownForeground's doc comment above.
-					hwndForeground: h.winKeyDownForeground,
+					// Passively tracked, not queried here: see
+					// lastRealForeground's doc comment in focus_windows.go.
+					hwndForeground: lastRealForeground.Load(),
 				}
 				if isKeyDown(vkShift) {
 					req.action = actionMoveWindowToDesktop
