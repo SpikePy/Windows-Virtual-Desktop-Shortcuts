@@ -25,9 +25,9 @@ type keyboardHook struct {
 	requests chan<- desktopRequest
 	callback uintptr
 
-	// comboSinceWinDown records that a Win+<digit> shortcut was handled
-	// during the current Win hold, so its release can be logged.
-	comboSinceWinDown bool
+	// winDownSeen tracks the Win key's last logged state, so only its
+	// press and release are logged and not its auto-repeat.
+	winDownSeen bool
 }
 
 func newKeyboardHook(requests chan<- desktopRequest) *keyboardHook {
@@ -71,6 +71,17 @@ func winKeyHeld() bool {
 	return isKeyDown(vkLWin) || isKeyDown(vkRWin)
 }
 
+// llkhfInjected is KBDLLHOOKSTRUCT's LLKHF_INJECTED flag: the event came
+// from SendInput rather than the keyboard.
+const llkhfInjected = 0x10
+
+func keyDirection(down bool) string {
+	if down {
+		return "down"
+	}
+	return "up"
+}
+
 // lowLevelKeyboardProc is the WH_KEYBOARD_LL hook procedure. It must return
 // quickly: it only classifies the keystroke and, if it is a plain
 // Win+<digit> or Win+Shift+<digit> combination, hands the request off to
@@ -85,9 +96,14 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 	}
 	kb := (*kbdllhookstruct)(unsafe.Pointer(lParam))
 
-	if isUp && (kb.VkCode == vkLWin || kb.VkCode == vkRWin) && h.comboSinceWinDown {
-		h.comboSinceWinDown = false
-		debugLogf("hook: Win released")
+	if (kb.VkCode == vkLWin || kb.VkCode == vkRWin) && isDown != h.winDownSeen {
+		h.winDownSeen = isDown
+		debugLogf("hook: Win %s", keyDirection(isDown))
+	}
+	if kb.VkCode >= vk1 && kb.VkCode <= vk9 {
+		debugLogf("hook: key %d %s (Win held: %v, Ctrl: %v, Alt: %v, Shift: %v, injected: %v)",
+			kb.VkCode-vk1+1, keyDirection(isDown), winKeyHeld(), isKeyDown(vkControl),
+			isKeyDown(vkMenu), isKeyDown(vkShift), kb.Flags&llkhfInjected != 0)
 	}
 	if !hotkeysEnabled.Load() || kb.VkCode < vk1 || kb.VkCode > vk9 {
 		return h.callNext(nCode, wParam, lParam)
@@ -107,7 +123,6 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 			req.action = actionMoveWindowToDesktop
 		}
 		debugLogf("hook: Win+%d (action %d)", req.index+1, req.action)
-		h.comboSinceWinDown = true
 		select {
 		case h.requests <- req:
 		default:
