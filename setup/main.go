@@ -59,7 +59,7 @@ func main() {
 
 	interactive := !*installFlag && !*uninstallFlag
 
-	action := "exit"
+	action := ""
 	switch {
 	case *installFlag:
 		action = "install"
@@ -84,12 +84,28 @@ func main() {
 	}
 
 	if interactive {
-		fmt.Print("\nPress Enter to exit...")
-		bufio.NewReader(os.Stdin).ReadString('\n')
+		waitToClose()
 	}
 
 	if err != nil {
 		os.Exit(1)
+	}
+}
+
+// waitToClose closes the window automatically 3 seconds after the action
+// is done, or immediately if the user presses Enter first.
+func waitToClose() {
+	fmt.Println("\nClosing in 3 seconds... (press Enter to close now)")
+
+	enter := make(chan struct{})
+	go func() {
+		bufio.NewReader(os.Stdin).ReadString('\n')
+		close(enter)
+	}()
+
+	select {
+	case <-enter:
+	case <-time.After(3 * time.Second):
 	}
 }
 
@@ -102,8 +118,7 @@ func promptForAction() string {
 		fmt.Println("What would you like to do?")
 		fmt.Println("  1) Install / update")
 		fmt.Println("  2) Uninstall")
-		fmt.Println("  3) Exit")
-		fmt.Print("Enter choice [1-3]: ")
+		fmt.Print("Enter choice [1-2]: ")
 
 		line, _ := reader.ReadString('\n')
 		switch strings.TrimSpace(line) {
@@ -111,10 +126,8 @@ func promptForAction() string {
 			return "install"
 		case "2":
 			return "uninstall"
-		case "3":
-			return "exit"
 		default:
-			fmt.Println("Please enter 1, 2, or 3.")
+			fmt.Println("Please enter 1 or 2.")
 		}
 	}
 }

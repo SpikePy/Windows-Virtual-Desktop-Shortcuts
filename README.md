@@ -48,9 +48,12 @@ Similarly, `Win+<digit>` is a shortcut reserved by Explorer for launching
 pinned taskbar apps, so the OS refuses to let a normal app register it with
 `RegisterHotKey`. Instead this app installs a low-level keyboard hook
 (`WH_KEYBOARD_LL`) that intercepts the keystroke before Explorer sees it,
-and swallows it — but only for Win+digit and Win+Shift+digit; Ctrl or Alt
-held down with the digit is left alone, so combinations like Ctrl+Win+3
-keep working normally.
+and swallows both its key-down and key-up — but only for Win+digit and
+Win+Shift+digit; Ctrl or Alt held down with the digit is left alone, so
+combinations like Ctrl+Win+3 keep working normally. This is what prevents
+Windows from also launching the corresponding pinned taskbar app: as long
+as this app is running (and not Disabled from the tray), Win+1..9 only
+switches/moves desktops and never launches a taskbar app.
 
 Moving a window to a desktop is the one piece of this that *is* a
 documented, stable public API — `IVirtualDesktopManager::MoveWindowToDesktop`
@@ -76,15 +79,22 @@ automatically, using the pushed tag).
 
 ### Icon
 
-The app's icon ([`winres/`](winres/)) is embedded as a Windows resource via
-[go-winres](https://github.com/tc-hib/go-winres): `rsrc_windows_amd64.syso`
-is checked into the repo root and `go build` links it in automatically —
-no extra build step needed. To change the icon, replace the PNGs under
-`winres/` and regenerate it:
+Both `VirtualDesktopShortcuts.exe` and `Setup_VirtualDesktopShortcuts.exe`
+share the same icon, embedded as a Windows resource via
+[go-winres](https://github.com/tc-hib/go-winres): each has its own
+`winres/` directory (with identical PNGs) and checked-in
+`rsrc_windows_amd64.syso` that `go build` links in automatically — no
+extra build step needed. The main app also loads this same icon at
+runtime for the tray (`loadAppIcon` in `tray_windows.go`, via
+`ExtractIconEx` on its own `.exe`).
+
+To change the icon, replace the PNGs under `winres/` **and**
+`setup/winres/` and regenerate both:
 
 ```sh
 go install github.com/tc-hib/go-winres@latest
 go-winres make --arch amd64 --out rsrc
+(cd setup && go-winres make --arch amd64 --out rsrc)
 ```
 
 ## Running
@@ -109,8 +119,7 @@ Virtual Desktop Shortcuts - Setup
 What would you like to do?
   1) Install / update
   2) Uninstall
-  3) Exit
-Enter choice [1-3]:
+Enter choice [1-2]:
 ```
 
 - **1) Install / update** downloads the newest GitHub release of this tool
@@ -120,6 +129,9 @@ Enter choice [1-3]:
   copying required. Running this again later re-checks and updates it.
 - **2) Uninstall** stops the running app and removes it from the Startup
   folder, leaving nothing installed and nothing running.
+
+Once the chosen action finishes, the window closes itself automatically
+after 3 seconds (press Enter to close it immediately instead).
 
 It's safe to run any time, including repeatedly (e.g. from a scheduled
 task, to keep the tool updated): neither action ever creates duplicates.

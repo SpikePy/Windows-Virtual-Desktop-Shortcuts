@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
 
@@ -48,7 +49,8 @@ var (
 
 	procCoCreateInstance = modOle32.NewProc("CoCreateInstance")
 
-	procGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
+	procGetModuleHandleW   = modKernel32.NewProc("GetModuleHandleW")
+	procOutputDebugStringW = modKernel32.NewProc("OutputDebugStringW")
 )
 
 const (
@@ -57,7 +59,9 @@ const (
 	whKeyboardLL = 13
 
 	wmKeyDown    = 0x0100
+	wmKeyUp      = 0x0101
 	wmSysKeyDown = 0x0104
+	wmSysKeyUp   = 0x0105
 
 	vkLWin    = 0x5B
 	vkRWin    = 0x5C
@@ -101,7 +105,8 @@ const (
 	mbIconError = 0x00000010
 	mbOK        = 0x00000000
 
-	clsctxLocalServer = 0x4
+	clsctxInprocServer = 0x1
+	clsctxLocalServer  = 0x4
 )
 
 type point struct {
@@ -180,6 +185,15 @@ func messageBoxError(text, title string) {
 		uintptr(unsafe.Pointer(mustUTF16Ptr(title))),
 		uintptr(mbOK|mbIconError),
 	)
+}
+
+// debugLogf sends a formatted message to the system debug output (visible
+// via DebugView or an attached debugger). This app has no console/UI for
+// routine, non-fatal errors, so this is the only way to diagnose them
+// without popping up a message box on every failure.
+func debugLogf(format string, args ...any) {
+	msg := fmt.Sprintf("[%s] %s\n", appName, fmt.Sprintf(format, args...))
+	procOutputDebugStringW.Call(uintptr(unsafe.Pointer(mustUTF16Ptr(msg))))
 }
 
 // comCall invokes the vtable method at the given zero-based slot (0 =

@@ -118,11 +118,18 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 	}
 
 	for req := range requests {
+		var err error
 		switch req.action {
 		case actionMoveWindowToDesktop:
-			_ = sw.moveForegroundWindowTo(req.index)
+			err = sw.moveForegroundWindowTo(req.index)
 		default:
-			_ = sw.switchTo(req.index)
+			err = sw.switchTo(req.index)
+		}
+		if err != nil {
+			// This app has no console/UI for routine errors; surface them
+			// via OutputDebugString (visible in DebugView or a debugger)
+			// instead of silently discarding them.
+			debugLogf("request %+v failed: %v", req, err)
 		}
 	}
 }
@@ -245,8 +252,11 @@ func (sw *desktopSwitcher) moveForegroundWindowTo(zeroBasedIndex int) error {
 	}
 
 	// MoveWindowToDesktop is, unusually, a documented public API -- no
-	// Windows-version branching needed here.
-	manager, err := coCreateInstance(clsidVirtualDesktopManager, clsctxLocalServer, iidIVirtualDesktopManager)
+	// Windows-version branching needed here. Unlike CLSID_ImmersiveShell
+	// (an out-of-process object hosted by the running explorer.exe, hence
+	// CLSCTX_LOCAL_SERVER above), CLSID_VirtualDesktopManager is an
+	// in-process server (a DLL loaded directly into this process).
+	manager, err := coCreateInstance(clsidVirtualDesktopManager, clsctxInprocServer, iidIVirtualDesktopManager)
 	if err != nil {
 		return fmt.Errorf("create VirtualDesktopManager instance: %w", err)
 	}
