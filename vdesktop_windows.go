@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"runtime"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -90,17 +89,6 @@ const (
 type desktopRequest struct {
 	action desktopAction
 	index  int // 0-based
-
-	// hwndForeground is the foreground window HWND as observed at the
-	// instant Win itself first went down (see winKeyDownForeground in
-	// hook_windows.go), captured synchronously in the hook rather than
-	// re-queried later here. Both matter: by the time this request
-	// reaches the switcher goroutine, Explorer may already have reacted
-	// and moved focus elsewhere; and capturing any later than Win's own
-	// key-down (e.g. at the digit's key-down) risks landing in the brief
-	// window where the foreground window is transiently Explorer's
-	// desktop rather than the real app, grabbing the wrong HWND entirely.
-	hwndForeground uintptr
 }
 
 // runDesktopSwitcher processes desktop switch/move requests until the
@@ -132,7 +120,7 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 		case actionMoveWindowToDesktop:
 			err = sw.moveForegroundWindowTo(req.index)
 		default:
-			err = sw.switchTo(req.index, req.hwndForeground)
+			err = sw.switchTo(req.index)
 		}
 		if err != nil {
 			// This app has no console/UI for routine errors; surface them
@@ -195,23 +183,7 @@ func (sw *desktopSwitcher) desktopAt(managerInternal unsafe.Pointer, zeroBasedIn
 
 // switchTo switches to the desktop at the given zero-based index. If no
 // such desktop exists, it does nothing (returns nil).
-//
-// Explorer's own Win+<digit> handling for "the pinned app at that
-// position is already focused" minimizes it instead of doing nothing --
-// and unlike the launch/switch-to-unfocused cases, this turned out to be
-// unblockable by anything done to the input stream (swallowing the digit
-// key, swallowing and even delaying reinjection of Win's key-up all made
-// no difference), strongly suggesting Explorer decides this via a raw
-// input registration rather than the message/hook-suppressible path. So
-// instead of trying to prevent it, this detects it happening right after
-// our own switch and undoes it. hwndBefore is the foreground window as
-// captured synchronously in the hook at keypress time (see
-// hook_windows.go); by the time this runs, Explorer may already have
-// acted and moved focus elsewhere, so re-querying it here would risk
-// checking/restoring the wrong window.
-func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) error {
-	debugLogf("switchTo(%d): captured %s", zeroBasedIndex, describeWindow(hwndBefore))
-
+func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
 		return fmt.Errorf("create ImmersiveShell instance: %w", err)
@@ -229,7 +201,6 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) erro
 		return err
 	}
 	if desktop == nil {
-		debugLogf("switchTo(%d): no such desktop", zeroBasedIndex)
 		return nil
 	}
 	defer comRelease(desktop)
@@ -238,49 +209,7 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int, hwndBefore uintptr) erro
 	if hrFailed(hr) {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
 	}
-	debugLogf("switchTo(%d): switch_desktop OK, polling hwndBefore=0x%X", zeroBasedIndex, hwndBefore)
-
-	go pollRestoreIfMinimized(hwndBefore)
-
 	return nil
-}
-
-// pollRestoreIfMinimized checks hwnd repeatedly over about 1.5s,
-// restoring it the moment it's seen minimized and stopping there. A
-// single delayed check risks missing a minimize that lands slightly
-// later or earlier than expected; polling catches it whenever it
-// actually happens instead of guessing one specific delay.
-func pollRestoreIfMinimized(hwnd uintptr) {
-	if hwnd == 0 {
-		debugLogf("pollRestoreIfMinimized: hwnd is 0, nothing to watch")
-		return
-	}
-	sleeps := []time.Duration{
-		0,
-		30 * time.Millisecond,
-		30 * time.Millisecond,
-		40 * time.Millisecond,
-		50 * time.Millisecond,
-		100 * time.Millisecond,
-		150 * time.Millisecond,
-		200 * time.Millisecond,
-		300 * time.Millisecond,
-		400 * time.Millisecond,
-	}
-	elapsed := time.Duration(0)
-	for i, d := range sleeps {
-		time.Sleep(d)
-		elapsed += d
-		minimized := isMinimized(hwnd)
-		debugLogf("pollRestoreIfMinimized: check %d at +%v: %s | currentForeground: %s",
-			i, elapsed, describeWindow(hwnd), describeWindow(getForegroundWindow()))
-		if minimized {
-			restoreWindow(hwnd)
-			debugLogf("pollRestoreIfMinimized: restored -> %s", describeWindow(hwnd))
-			return
-		}
-	}
-	debugLogf("pollRestoreIfMinimized: gave up after %d checks (%v total), never saw it minimized: %s", len(sleeps), elapsed, describeWindow(hwnd))
 }
 
 // queryViewCollection fetches IApplicationViewCollection through the

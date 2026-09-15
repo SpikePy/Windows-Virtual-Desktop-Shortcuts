@@ -106,9 +106,6 @@ func runApp(requests chan<- desktopRequest) error {
 	procSetTimer.Call(uintptr(app.hwnd), iconSyncTimerID, iconSyncIntervalMs, 0)
 	defer procKillTimer.Call(uintptr(app.hwnd), iconSyncTimerID)
 
-	stopForegroundTracker := startForegroundTracker()
-	defer stopForegroundTracker()
-
 	hook := newKeyboardHook(requests)
 	if err := hook.install(); err != nil {
 		messageBoxError(

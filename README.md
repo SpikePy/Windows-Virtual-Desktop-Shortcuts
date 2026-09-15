@@ -19,6 +19,24 @@ If the desktop doesn't exist (e.g. you press `Win+5` or `Win+Shift+5` but
 only have 3 desktops), the shortcut is a no-op — it does not create a new
 desktop, and moving with no window focused is also a no-op.
 
+**One-time setup:** Explorer has its own Win+1..9 shortcuts for pinned
+taskbar apps, and this app can't fully override them (see
+[below](#how-it-works-and-why-its-fragile)). Turn them off once, then
+restart Explorer or sign out and back in:
+
+```
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisabledHotkeys /t REG_SZ /d 123456789 /f
+```
+
+Without this, Win+N minimizes the focused app instead of switching when
+that app is pinned at taskbar position N. With it, Win+1..9 no longer
+opens pinned taskbar apps, even while this app is disabled or not
+running. To undo it:
+
+```
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v DisabledHotkeys /f
+```
+
 The app runs quietly in the system tray, showing its name and version on
 hover. **Left-click** the tray icon to toggle Enable/Disable directly.
 When disabled, the icon turns grey with a red diagonal strike-through so
@@ -52,46 +70,20 @@ Similarly, `Win+<digit>` is a shortcut reserved by Explorer for launching,
 switching to, or (if it's already the active window) minimizing the Nth
 pinned taskbar app, so the OS refuses to let a normal app register it with
 `RegisterHotKey`. Instead this app installs a low-level keyboard hook
-(`WH_KEYBOARD_LL`) that intercepts the keystroke before Explorer sees it,
-and swallows both its key-down and key-up — but only for Win+digit and
-Win+Shift+digit; Ctrl or Alt held down with the digit is left alone, so
-combinations like Ctrl+Win+3 keep working normally.
+(`WH_KEYBOARD_LL`) that swallows the digit's key-down and key-up for
+Win+digit and Win+Shift+digit; Ctrl or Alt held down with the digit is
+left alone, so combinations like Ctrl+Win+3 keep working normally. While
+Win is still held it also taps an unassigned virtual key (0xE8), the same
+"menu mask key" trick AutoHotkey uses, so releasing Win doesn't open the
+Start menu.
 
-Swallowing the digit key alone stops the launch and switch-to-unfocused-app
-cases. The minimize case -- Win+<digit> when the pinned app at that
-position is already focused -- turned out to be unblockable by anything
-done to the input stream: swallowing the digit key, swallowing the Win
-key's own key-up, and even delaying its reinjection all made no
-difference, which strongly suggests Explorer decides it via a raw input
-registration rather than the message/hook-suppressible path low-level
-hooks can intercept. So instead of trying to prevent it, `switchTo` in
-`vdesktop_windows.go` detects it happening right after its own desktop
-switch and un-minimizes it -- polling the previously-focused window for
-up to ~1.5s after switching and restoring it the moment (if ever) it's
-seen minimized.
-
-Getting a reliable handle on "the previously-focused window" in the first
-place turned out to be its own problem: `GetForegroundWindow()`, queried
-at any point after Win goes down -- even at Win's own key-down, the
-earliest this app can act at all -- can already return Explorer's desktop
-window ("Progman") instead of the real app, because holding Win shifts
-the foreground window there essentially synchronously. `focus_windows.go`
-sidesteps this with a `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND` that
-passively tracks the last foreground window that *isn't* the desktop
-shell, updated continuously in the background rather than queried at any
-single instant -- so there's no race to lose, regardless of timing.
-
-Separately, this app also swallows the Win key's own key-up -- but only
-when it was actually used for one of our Win+<digit> combos during that
-hold, so a plain tap of Win still opens the Start Menu normally. Doing
-that outright would leave everything downstream of this hook (Explorer
-included) thinking Win was still held, since they'd never see it
-released, so a synthetic key-up is reinjected via `SendInput` a little
-later (350ms) to let that settle without immediately undoing the swallow.
-This is unrelated to the minimize issue above -- it's what keeps the Win
-key itself from feeling "stuck" after a shortcut. As long as this app is
-running (and not Disabled from the tray), Win+1..9
-only switches/moves desktops and never touches a taskbar app.
+The hook alone isn't enough, though. Explorer still reacts to Win+digit
+even with the digit swallowed: when the app pinned at that taskbar
+position is already focused, it minimizes the app instead of letting the
+desktop switch. Swallowing the Win key's own key-up and trying to
+un-minimize the app afterwards were both tried and neither helped. The
+fix is the `DisabledHotkeys` setting from the one-time setup above, which
+stops Explorer from handling Win+1..9 at all.
 
 Moving a window to a desktop *could* use the one piece of this that's a
 documented, public API — `IVirtualDesktopManager::MoveWindowToDesktop` —
