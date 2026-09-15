@@ -25,6 +25,8 @@ var (
 	procGetAsyncKeyState    = modUser32.NewProc("GetAsyncKeyState")
 	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
 	procSendInput           = modUser32.NewProc("SendInput")
+	procIsIconic            = modUser32.NewProc("IsIconic")
+	procShowWindow          = modUser32.NewProc("ShowWindow")
 
 	procRegisterClassExW = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW  = modUser32.NewProc("CreateWindowExW")
@@ -279,4 +281,18 @@ func hrFailed(hr uintptr) bool {
 func getForegroundWindow() uintptr {
 	r0, _, _ := procGetForegroundWindow.Call()
 	return r0
+}
+
+const swRestore = 9
+
+// restoreIfMinimized un-minimizes hwnd if (and only if) it's currently
+// minimized.
+func restoreIfMinimized(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	r0, _, _ := procIsIconic.Call(hwnd)
+	if r0 != 0 {
+		procShowWindow.Call(hwnd, uintptr(swRestore))
+	}
 }

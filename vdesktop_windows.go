@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -183,7 +184,19 @@ func (sw *desktopSwitcher) desktopAt(managerInternal unsafe.Pointer, zeroBasedIn
 
 // switchTo switches to the desktop at the given zero-based index. If no
 // such desktop exists, it does nothing (returns nil).
+//
+// Explorer's own Win+<digit> handling for "the pinned app at that
+// position is already focused" minimizes it instead of doing nothing --
+// and unlike the launch/switch-to-unfocused cases, this turned out to be
+// unblockable by anything done to the input stream (swallowing the digit
+// key, swallowing and even delaying reinjection of Win's key-up all made
+// no difference), strongly suggesting Explorer decides this via a raw
+// input registration rather than the message/hook-suppressible path. So
+// instead of trying to prevent it, this detects it happening right after
+// our own switch and undoes it.
 func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
+	hwndBefore := getForegroundWindow()
+
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
 		return fmt.Errorf("create ImmersiveShell instance: %w", err)
@@ -209,6 +222,15 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	if hrFailed(hr) {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
 	}
+
+	restoreIfMinimized(hwndBefore)
+	go func() {
+		// A second, delayed pass in case Explorer's minimize hasn't
+		// landed yet at the point above.
+		time.Sleep(250 * time.Millisecond)
+		restoreIfMinimized(hwndBefore)
+	}()
+
 	return nil
 }
 

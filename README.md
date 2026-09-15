@@ -57,21 +57,28 @@ and swallows both its key-down and key-up — but only for Win+digit and
 Win+Shift+digit; Ctrl or Alt held down with the digit is left alone, so
 combinations like Ctrl+Win+3 keep working normally.
 
-Swallowing the digit key alone stops the launch/switch cases, but not the
-minimize case: that one turned out to be keyed off the Win key's *own*
-key-up (checking low-level key state at that point, not off receiving the
-digit key's message), so this app also swallows the Win key's key-up --
-but only when it was actually used for one of our Win+<digit> combos
-during that hold, so a plain tap of Win still opens the Start Menu
-normally. Swallowing that key-up outright would otherwise leave
-everything downstream of this hook (Explorer included) thinking Win was
-still held, since they'd never see it released -- so a synthetic key-up
-is reinjected via `SendInput` a little later (350ms), once Explorer's own
-"was a digit key just pressed" window for the minimize check has almost
-certainly lapsed. Reinjecting it immediately was tried first and just
-handed that check the exact event it needed to fire anyway -- the delay
-is what actually breaks the cycle. As long as this app is running (and
-not Disabled from the tray), Win+1..9
+Swallowing the digit key alone stops the launch and switch-to-unfocused-app
+cases. The minimize case -- Win+<digit> when the pinned app at that
+position is already focused -- turned out to be unblockable by anything
+done to the input stream: swallowing the digit key, swallowing the Win
+key's own key-up, and even delaying its reinjection all made no
+difference, which strongly suggests Explorer decides it via a raw input
+registration rather than the message/hook-suppressible path low-level
+hooks can intercept. So instead of trying to prevent it, `switchTo` in
+`vdesktop_windows.go` detects it happening right after its own desktop
+switch (checking whether the previously-focused window ended up
+minimized) and un-minimizes it.
+
+Separately, this app also swallows the Win key's own key-up -- but only
+when it was actually used for one of our Win+<digit> combos during that
+hold, so a plain tap of Win still opens the Start Menu normally. Doing
+that outright would leave everything downstream of this hook (Explorer
+included) thinking Win was still held, since they'd never see it
+released, so a synthetic key-up is reinjected via `SendInput` a little
+later (350ms) to let that settle without immediately undoing the swallow.
+This is unrelated to the minimize issue above -- it's what keeps the Win
+key itself from feeling "stuck" after a shortcut. As long as this app is
+running (and not Disabled from the tray), Win+1..9
 only switches/moves desktops and never touches a taskbar app.
 
 Moving a window to a desktop *could* use the one piece of this that's a
