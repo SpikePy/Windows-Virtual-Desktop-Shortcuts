@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -150,6 +151,20 @@ func sendKeyUp(vk uint16) {
 		dwFlags:   keyeventfKeyUp,
 	}
 	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+}
+
+// sendKeyUpAfter is sendKeyUp, deferred by delay on its own goroutine.
+// Reinjecting the Win key-up *immediately* after swallowing the real one
+// turned out to hand Explorer's own Win+<digit> minimize check exactly
+// the event it needed to fire anyway, undoing the point of swallowing it
+// in the first place. Delaying it gives that check's "was a digit key
+// just pressed" window time to lapse first, while still letting anything
+// downstream eventually see Win as released.
+func sendKeyUpAfter(vk uint16, delay time.Duration) {
+	go func() {
+		time.Sleep(delay)
+		sendKeyUp(vk)
+	}()
 }
 
 type msg struct {

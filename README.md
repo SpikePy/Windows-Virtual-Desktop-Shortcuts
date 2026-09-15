@@ -66,9 +66,12 @@ during that hold, so a plain tap of Win still opens the Start Menu
 normally. Swallowing that key-up outright would otherwise leave
 everything downstream of this hook (Explorer included) thinking Win was
 still held, since they'd never see it released -- so a synthetic key-up
-is injected via `SendInput` right after, letting that state settle
-correctly without giving Explorer's own handling a real event to act on.
-As long as this app is running (and not Disabled from the tray), Win+1..9
+is reinjected via `SendInput` a little later (350ms), once Explorer's own
+"was a digit key just pressed" window for the minimize check has almost
+certainly lapsed. Reinjecting it immediately was tried first and just
+handed that check the exact event it needed to fire anyway -- the delay
+is what actually breaks the cycle. As long as this app is running (and
+not Disabled from the tray), Win+1..9
 only switches/moves desktops and never touches a taskbar app.
 
 Moving a window to a desktop *could* use the one piece of this that's a

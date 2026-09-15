@@ -4,10 +4,18 @@ package main
 
 import (
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// winKeyUpReinjectDelay is how long to wait before reinjecting Win's
+// swallowed key-up (see sendKeyUpAfter's doc in winapi_windows.go). Long
+// enough that Explorer's own "was a digit key just pressed" window for
+// the minimize check has almost certainly lapsed; short enough that
+// anything else waiting to see Win released doesn't notice the delay.
+const winKeyUpReinjectDelay = 350 * time.Millisecond
 
 // keyboardHook manages the low-level keyboard hook used to intercept
 // Win+1..Win+9 (switch to desktop N) and Win+Shift+1..Win+Shift+9 (move
@@ -92,9 +100,11 @@ func isKeyDown(vk int) bool {
 //
 // Swallowing Win's own key-up would otherwise leave anything downstream
 // of this hook (Explorer included) thinking Win is still held, since they
-// never see it released -- so a synthetic key-up is injected via
-// SendInput right after, letting that state settle correctly without
-// giving Explorer's own pinned-app handling a real event to act on.
+// never see it released -- so a synthetic key-up is reinjected via
+// SendInput a little later (winKeyUpReinjectDelay), once Explorer's own
+// "was a digit key just pressed" window for the minimize check has almost
+// certainly lapsed. Reinjecting it immediately was tried first and just
+// handed that check the exact event it needed to fire anyway.
 func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintptr {
 	isDown := wParam == wmKeyDown || wParam == wmSysKeyDown
 	isUp := wParam == wmKeyUp || wParam == wmSysKeyUp
@@ -114,7 +124,7 @@ func (h *keyboardHook) lowLevelKeyboardProc(nCode, wParam, lParam uintptr) uintp
 			h.winPhysicallyDown = false
 			if h.winUsedForCombo {
 				h.winUsedForCombo = false
-				sendKeyUp(uint16(kb.VkCode))
+				sendKeyUpAfter(uint16(kb.VkCode), winKeyUpReinjectDelay)
 				return 1 // swallow: see winUsedForCombo doc above
 			}
 		}
