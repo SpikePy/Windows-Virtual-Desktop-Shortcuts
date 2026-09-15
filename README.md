@@ -20,16 +20,20 @@ only have 3 desktops), the shortcut is a no-op — it does not create a new
 desktop, and moving with no window focused is also a no-op.
 
 The app runs quietly in the system tray, showing its name and version on
-hover. Right-click the tray icon for:
+hover. **Left-click** the tray icon to toggle Enable/Disable directly.
+When disabled, the icon turns grey with a red diagonal strike-through so
+you can tell at a glance.
 
-- **Enable** / **Disable** — turn the Win+1..9 shortcuts on or off without
-  uninstalling the app (whichever state is already active is greyed out).
+**Right-click** for the full menu:
+
+- **Enable** / **Disable** — same toggle as left-click, spelled out
+  (whichever state is already active is greyed out).
 - **Configure** — opens `config.yaml` (creating it with defaults on first
   use) in your default YAML editor. It lives at
   `%APPDATA%\VirtualDesktopShortcuts\config.yaml` and currently has one
   setting, `enabled`, which mirrors the tray's Enable/Disable — edit and
   save it and the change takes effect within a couple of seconds, no
-  restart needed.
+  restart needed (including updating the tray icon).
 - **Exit** — quits the app.
 
 ## How it works, and why it's fragile
@@ -95,11 +99,13 @@ automatically, using the pushed tag).
 Both `VirtualDesktopShortcuts.exe` and `Setup_VirtualDesktopShortcuts.exe`
 share the same icon, embedded as a Windows resource via
 [go-winres](https://github.com/tc-hib/go-winres): each has its own
-`winres/` directory (with identical PNGs) and checked-in
-`rsrc_windows_amd64.syso` that `go build` links in automatically — no
-extra build step needed. The main app also loads this same icon at
-runtime for the tray (`loadAppIcon` in `tray_windows.go`, via
-`ExtractIconEx` on its own `.exe`).
+`winres/` directory and checked-in `rsrc_windows_amd64.syso` that
+`go build` links in automatically — no extra build step needed. The root
+`winres/winres.json` embeds two named icon groups, `APP` (the normal
+blue-tile icon) and `APPDISABLED` (all tiles grey, with a red diagonal
+strike-through); `setup/winres/` only needs `APP`. The main app loads both
+by name at runtime (`loadNamedIcon` in `tray_windows.go`) and swaps
+between them for the tray icon based on Enable/Disable state.
 
 To change the icon, replace the PNGs under `winres/` **and**
 `setup/winres/` and regenerate both:

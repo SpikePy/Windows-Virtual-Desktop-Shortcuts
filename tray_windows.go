@@ -4,7 +4,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"syscall"
 	"unsafe"
 
@@ -19,8 +18,21 @@ const (
 	menuIDConfigure = 1003
 	menuIDExit      = 1004
 
+	// iconSyncTimerID drives a periodic check that keeps the tray icon's
+	// graphic (enabled vs. disabled) in sync with hotkeysEnabled, which
+	// can change from outside a direct tray click -- e.g. an external
+	// edit to config.yaml, picked up by the background watcher in
+	// config_windows.go.
+	iconSyncTimerID    = 1
+	iconSyncIntervalMs = 1000
+
 	appName   = "Virtual Desktop Shortcuts"
 	className = "VDSwitcherHiddenWindowClass"
+
+	// Resource names of the two icon groups embedded via go-winres; see
+	// winres/winres.json.
+	iconResourceEnabled  = "APP"
+	iconResourceDisabled = "APPDISABLED"
 )
 
 // trayApp owns the hidden window, tray icon and keyboard hook. Everything
@@ -29,8 +41,15 @@ const (
 type trayApp struct {
 	hInstance windows.Handle
 	hwnd      windows.Handle
-	hIcon     windows.Handle
 	hook      *keyboardHook
+
+	hIconEnabled  windows.Handle
+	hIconDisabled windows.Handle
+
+	// iconStateInit/lastEnabled let syncIconState skip redundant
+	// Shell_NotifyIcon calls when nothing has actually changed.
+	iconStateInit bool
+	lastEnabled   bool
 }
 
 // runApp registers a hidden window, adds a tray icon, installs the
@@ -42,7 +61,8 @@ func runApp(requests chan<- desktopRequest) error {
 	hInstanceR, _, _ := procGetModuleHandleW.Call(0)
 	app := &trayApp{hInstance: windows.Handle(hInstanceR)}
 
-	app.hIcon = loadAppIcon()
+	app.hIconEnabled = loadNamedIcon(app.hInstance, iconResourceEnabled)
+	app.hIconDisabled = loadNamedIcon(app.hInstance, iconResourceDisabled)
 	cursorR, _, _ := procLoadCursorW.Call(0, uintptr(idcArrow))
 
 	classNamePtr := mustUTF16Ptr(className)
@@ -53,8 +73,8 @@ func runApp(requests chan<- desktopRequest) error {
 	wc.style = csHRedraw | csVRedraw
 	wc.lpfnWndProc = wndProcPtr
 	wc.hInstance = app.hInstance
-	wc.hIcon = app.hIcon
-	wc.hIconSm = app.hIcon
+	wc.hIcon = app.hIconEnabled
+	wc.hIconSm = app.hIconEnabled
 	wc.hCursor = windows.Handle(cursorR)
 	wc.lpszClassName = classNamePtr
 
@@ -81,6 +101,10 @@ func runApp(requests chan<- desktopRequest) error {
 		return err
 	}
 	defer app.removeTrayIcon()
+	app.syncIconState() // correct the icon if starting out disabled
+
+	procSetTimer.Call(uintptr(app.hwnd), iconSyncTimerID, iconSyncIntervalMs, 0)
+	defer procKillTimer.Call(uintptr(app.hwnd), iconSyncTimerID)
 
 	hook := newKeyboardHook(requests)
 	if err := hook.install(); err != nil {
@@ -97,29 +121,23 @@ func runApp(requests chan<- desktopRequest) error {
 	return nil
 }
 
-// loadAppIcon extracts the icon embedded in this executable's own resources
-// (via go-winres, see winres/winres.json and rsrc_windows_amd64.syso) so
-// the tray icon matches the one shown for the .exe file in Explorer. Index
-// 0 is safe to hardcode: the exe embeds exactly one icon group, so it's
-// unambiguous regardless of what resource ID/name go-winres assigned it.
-// Falls back to the stock application icon if that ever fails.
-func loadAppIcon() windows.Handle {
-	if exePath, err := os.Executable(); err == nil {
-		var hIconLarge, hIconSmall windows.Handle
-		r0, _, _ := procExtractIconExW.Call(
-			uintptr(unsafe.Pointer(mustUTF16Ptr(exePath))),
-			0,
-			uintptr(unsafe.Pointer(&hIconLarge)),
-			uintptr(unsafe.Pointer(&hIconSmall)),
-			1,
-		)
-		if int32(r0) > 0 && hIconSmall != 0 {
-			return hIconSmall
-		}
+// loadNamedIcon loads a 16x16 icon by resource name from this executable's
+// own module (as embedded via go-winres; see winres/winres.json), falling
+// back to the stock application icon if that ever fails.
+func loadNamedIcon(hInstance windows.Handle, name string) windows.Handle {
+	r0, _, _ := procLoadImageW.Call(
+		uintptr(hInstance),
+		uintptr(unsafe.Pointer(mustUTF16Ptr(name))),
+		uintptr(imageIcon),
+		16, 16,
+		0,
+	)
+	if r0 != 0 {
+		return windows.Handle(r0)
 	}
 
-	iconR, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
-	return windows.Handle(iconR)
+	stockR, _, _ := procLoadIconW.Call(0, uintptr(idiApplication))
+	return windows.Handle(stockR)
 }
 
 func (app *trayApp) messageLoop() {
@@ -140,12 +158,19 @@ func (app *trayApp) wndProc(hwnd, message, wParam, lParam uintptr) uintptr {
 	switch uint32(message) {
 	case wmTrayCallback:
 		switch uint32(lParam) {
-		case wmLButtonUp, wmRButtonUp, wmContextMenu:
+		case wmLButtonUp:
+			app.toggleEnabled()
+		case wmRButtonUp, wmContextMenu:
 			app.showMenu()
 		}
 		return 0
 	case wmCommand:
 		app.handleCommand(loword(uint32(wParam)))
+		return 0
+	case wmTimer:
+		if wParam == iconSyncTimerID {
+			app.syncIconState()
+		}
 		return 0
 	case wmDestroy:
 		procPostQuitMessage.Call(0)
@@ -158,20 +183,33 @@ func (app *trayApp) wndProc(hwnd, message, wParam, lParam uintptr) uintptr {
 func (app *trayApp) handleCommand(id uint16) {
 	switch id {
 	case menuIDEnable:
-		hotkeysEnabled.Store(true)
-		if err := setEnabledInFile(true); err != nil {
-			messageBoxError(fmt.Sprintf("Enabled, but failed to save it to the config file:\n%v", err), appName)
-		}
+		app.setEnabled(true)
 	case menuIDDisable:
-		hotkeysEnabled.Store(false)
-		if err := setEnabledInFile(false); err != nil {
-			messageBoxError(fmt.Sprintf("Disabled, but failed to save it to the config file:\n%v", err), appName)
-		}
+		app.setEnabled(false)
 	case menuIDConfigure:
 		app.openConfigure()
 	case menuIDExit:
 		procDestroyWindow.Call(uintptr(app.hwnd))
 	}
+}
+
+func (app *trayApp) toggleEnabled() {
+	app.setEnabled(!hotkeysEnabled.Load())
+}
+
+// setEnabled updates the shared enabled state (checked by the keyboard
+// hook), persists it to config.yaml so the tray and the file never
+// disagree, and refreshes the tray icon's graphic immediately.
+func (app *trayApp) setEnabled(enabled bool) {
+	hotkeysEnabled.Store(enabled)
+	if err := setEnabledInFile(enabled); err != nil {
+		verb := "Enabled"
+		if !enabled {
+			verb = "Disabled"
+		}
+		messageBoxError(fmt.Sprintf("%s, but failed to save it to the config file:\n%v", verb, err), appName)
+	}
+	app.syncIconState()
 }
 
 // openConfigure makes sure the config file exists, then opens it in
@@ -203,7 +241,7 @@ func (app *trayApp) addTrayIcon() error {
 	nid.uID = trayIconID
 	nid.uFlags = nifMessage | nifIcon | nifTip
 	nid.uCallbackMessage = wmTrayCallback
-	nid.hIcon = app.hIcon
+	nid.hIcon = app.hIconEnabled
 	setTip(&nid, fmt.Sprintf("%s %s", appName, version))
 
 	r0, _, _ := procShellNotifyIconW.Call(uintptr(nimAdd), uintptr(unsafe.Pointer(&nid)))
@@ -219,6 +257,32 @@ func (app *trayApp) removeTrayIcon() {
 	nid.hWnd = app.hwnd
 	nid.uID = trayIconID
 	procShellNotifyIconW.Call(uintptr(nimDelete), uintptr(unsafe.Pointer(&nid)))
+}
+
+// syncIconState swaps the tray icon's graphic to match hotkeysEnabled,
+// whatever last changed it -- a tray click, the menu, or an external edit
+// to config.yaml picked up by the background watcher. It's cheap to call
+// often: it only touches the shell when the state actually changed.
+func (app *trayApp) syncIconState() {
+	enabled := hotkeysEnabled.Load()
+	if app.iconStateInit && enabled == app.lastEnabled {
+		return
+	}
+	app.iconStateInit = true
+	app.lastEnabled = enabled
+
+	icon := app.hIconEnabled
+	if !enabled {
+		icon = app.hIconDisabled
+	}
+
+	var nid notifyIconDataW
+	nid.cbSize = uint32(unsafe.Sizeof(nid))
+	nid.hWnd = app.hwnd
+	nid.uID = trayIconID
+	nid.uFlags = nifIcon
+	nid.hIcon = icon
+	procShellNotifyIconW.Call(uintptr(nimModify), uintptr(unsafe.Pointer(&nid)))
 }
 
 func (app *trayApp) showMenu() {
@@ -239,6 +303,7 @@ func (app *trayApp) showMenu() {
 
 	procAppendMenuW.Call(uintptr(hMenu), enableFlags, uintptr(menuIDEnable), uintptr(unsafe.Pointer(mustUTF16Ptr("Enable"))))
 	procAppendMenuW.Call(uintptr(hMenu), disableFlags, uintptr(menuIDDisable), uintptr(unsafe.Pointer(mustUTF16Ptr("Disable"))))
+	procAppendMenuW.Call(uintptr(hMenu), uintptr(mfSeparator), 0, 0)
 	procAppendMenuW.Call(uintptr(hMenu), uintptr(mfString), uintptr(menuIDConfigure), uintptr(unsafe.Pointer(mustUTF16Ptr("Configure"))))
 	procAppendMenuW.Call(uintptr(hMenu), uintptr(mfSeparator), 0, 0)
 	procAppendMenuW.Call(uintptr(hMenu), uintptr(mfString), uintptr(menuIDExit), uintptr(unsafe.Pointer(mustUTF16Ptr("Exit"))))

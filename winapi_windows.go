@@ -34,6 +34,7 @@ var (
 	procPostQuitMessage  = modUser32.NewProc("PostQuitMessage")
 	procPostMessageW     = modUser32.NewProc("PostMessageW")
 	procLoadIconW        = modUser32.NewProc("LoadIconW")
+	procLoadImageW       = modUser32.NewProc("LoadImageW")
 	procLoadCursorW      = modUser32.NewProc("LoadCursorW")
 	procCreatePopupMenu  = modUser32.NewProc("CreatePopupMenu")
 	procAppendMenuW      = modUser32.NewProc("AppendMenuW")
@@ -42,10 +43,11 @@ var (
 	procSetForegroundWnd = modUser32.NewProc("SetForegroundWindow")
 	procGetCursorPos     = modUser32.NewProc("GetCursorPos")
 	procMessageBoxW      = modUser32.NewProc("MessageBoxW")
+	procSetTimer         = modUser32.NewProc("SetTimer")
+	procKillTimer        = modUser32.NewProc("KillTimer")
 
 	procShellNotifyIconW = modShell32.NewProc("Shell_NotifyIconW")
 	procShellExecuteW    = modShell32.NewProc("ShellExecuteW")
-	procExtractIconExW   = modShell32.NewProc("ExtractIconExW")
 
 	procCoCreateInstance = modOle32.NewProc("CoCreateInstance")
 
@@ -73,6 +75,7 @@ const (
 
 	wmDestroy      = 0x0002
 	wmCommand      = 0x0111
+	wmTimer        = 0x0113
 	wmLButtonUp    = 0x0202
 	wmRButtonUp    = 0x0205
 	wmContextMenu  = 0x007B
@@ -84,6 +87,8 @@ const (
 
 	idiApplication = 32512
 	idcArrow       = 32512
+
+	imageIcon = 1
 
 	mfString    = 0x0000
 	mfGrayed    = 0x00000001
