@@ -43,9 +43,9 @@ type iconInfo struct {
 	hbmColor uintptr
 }
 
-// iconSize matches desktopicon.GridSize, so the glyph maps 1:1 with no
-// scaling needed.
-const iconSize = desktopicon.GridSize
+// trayIconSize matches desktopicon.GridSize, so the tray glyph maps 1:1
+// with no scaling needed.
+const trayIconSize = desktopicon.GridSize
 
 // pixel is BGRA order (what a 32bpp Windows DIB section expects).
 type pixel struct{ B, G, R, A byte }
@@ -61,12 +61,13 @@ var (
 // HICON. For enabled=true the tiles are dark with the first one accented
 // blue. For enabled=false the same glyph is drawn grey with a diagonal red
 // strike across it - the conventional "disabled" cue - so it stays clearly
-// recognizable against both light and dark taskbars.
-func buildDesktopIcon(enabled bool) (uintptr, error) {
+// recognizable against both light and dark taskbars. size is the icon's
+// width and height in pixels.
+func buildDesktopIcon(enabled bool, size int) (uintptr, error) {
 	var bi bitmapInfoHeader
 	bi.biSize = uint32(unsafe.Sizeof(bi))
-	bi.biWidth = iconSize
-	bi.biHeight = -iconSize // negative = top-down DIB, simpler indexing
+	bi.biWidth = int32(size)
+	bi.biHeight = -int32(size) // negative = top-down DIB, simpler indexing
 	bi.biPlanes = 1
 	bi.biBitCount = 32
 	bi.biCompression = 0 // BI_RGB
@@ -76,15 +77,15 @@ func buildDesktopIcon(enabled bool) (uintptr, error) {
 	if hColor == 0 {
 		return 0, fmt.Errorf("CreateDIBSection: %w", e)
 	}
-	pixels := unsafe.Slice((*pixel)(unsafe.Pointer(bitsPtr)), iconSize*iconSize)
+	pixels := unsafe.Slice((*pixel)(unsafe.Pointer(bitsPtr)), size*size)
 
-	for y := 0; y < iconSize; y++ {
-		for x := 0; x < iconSize; x++ {
-			switch desktopicon.At(x, y) {
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			switch desktopicon.AtScaled(x, y, size) {
 			case desktopicon.PartAccent:
-				pixels[y*iconSize+x] = accentPixel
+				pixels[y*size+x] = accentPixel
 			case desktopicon.PartTile:
-				pixels[y*iconSize+x] = tilePixel
+				pixels[y*size+x] = tilePixel
 			}
 		}
 	}
@@ -95,13 +96,14 @@ func buildDesktopIcon(enabled bool) (uintptr, error) {
 				pixels[i] = greyPixel
 			}
 		}
+		strike := 2 * size / trayIconSize
 		// Diagonal strike, top-left to bottom-right, spanning the whole
 		// canvas (including the transparent background) so it's
 		// unambiguous at tray size regardless of glyph shape.
-		for y := 0; y < iconSize; y++ {
-			for x := 0; x < iconSize; x++ {
-				if d := x - y; d >= -2 && d <= 2 {
-					pixels[y*iconSize+x] = strikePixel
+		for y := 0; y < size; y++ {
+			for x := 0; x < size; x++ {
+				if d := x - y; d >= -strike && d <= strike {
+					pixels[y*size+x] = strikePixel
 				}
 			}
 		}
@@ -109,8 +111,9 @@ func buildDesktopIcon(enabled bool) (uintptr, error) {
 
 	// AND mask: all zero bits means "always use the color bitmap's own
 	// alpha", the standard approach for a modern alpha-blended icon.
-	maskBytes := make([]byte, (iconSize/8)*iconSize)
-	hMask, _, e := procCreateBitmap.Call(iconSize, iconSize, 1, 1, uintptr(unsafe.Pointer(&maskBytes[0])))
+	// Monochrome bitmap rows are padded to a 16-bit boundary.
+	maskBytes := make([]byte, (size+15)/16*2*size)
+	hMask, _, e := procCreateBitmap.Call(uintptr(size), uintptr(size), 1, 1, uintptr(unsafe.Pointer(&maskBytes[0])))
 	if hMask == 0 {
 		procDeleteObject.Call(hColor)
 		return 0, fmt.Errorf("CreateBitmap: %w", e)
@@ -131,13 +134,18 @@ func buildDesktopIcon(enabled bool) (uintptr, error) {
 }
 
 // EnabledIcon returns the desktop glyph with the shortcuts active.
-func EnabledIcon() (uintptr, error) { return buildDesktopIcon(true) }
+func EnabledIcon() (uintptr, error) { return buildDesktopIcon(true, trayIconSize) }
 
 // DisabledIcon returns the same glyph greyed out with a diagonal red
 // strike across it (shortcuts turned off).
-func DisabledIcon() (uintptr, error) { return buildDesktopIcon(false) }
+func DisabledIcon() (uintptr, error) { return buildDesktopIcon(false, trayIconSize) }
 
-// DestroyIconHandle frees an HICON returned by EnabledIcon/DisabledIcon.
+// AppIcon returns the enabled glyph at size x size pixels, for showing the
+// app's icon elsewhere, such as in the Setup window.
+func AppIcon(size int) (uintptr, error) { return buildDesktopIcon(true, size) }
+
+// DestroyIconHandle frees an HICON returned by EnabledIcon, DisabledIcon
+// or AppIcon.
 // Safe to call on a zero handle.
 func DestroyIconHandle(hIcon uintptr) {
 	if hIcon != 0 {

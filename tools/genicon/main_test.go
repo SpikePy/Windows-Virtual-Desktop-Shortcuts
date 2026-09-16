@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"image"
 	"image/png"
+	"os"
 	"testing"
 
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/desktopicon"
@@ -82,5 +83,45 @@ func TestEncodeICO(t *testing.T) {
 		if b := img.Bounds(); b.Dx() != size || b.Dy() != size {
 			t.Errorf("frame %d decodes to %dx%d, want %dx%d", i, b.Dx(), b.Dy(), size, size)
 		}
+	}
+}
+
+// The .syso files are generated once and committed, so nothing rebuilds
+// them when the glyph or the manifest changes. This catches a stale one:
+// every PNG frame genicon renders must appear in each exe's resources, and
+// Setup's must carry its manifest verbatim. See DETAILS.md for the
+// commands that regenerate them.
+func TestCommittedResourcesAreCurrent(t *testing.T) {
+	var frames [][]byte
+	for _, size := range sizes {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, render(size)); err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, buf.Bytes())
+	}
+
+	for _, dir := range []string{"virtualdesktopshortcuts", "vds-setup"} {
+		syso, err := os.ReadFile("../../cmd/" + dir + "/rsrc_windows_amd64.syso")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, f := range frames {
+			if !bytes.Contains(syso, f) {
+				t.Errorf("cmd/%s: the %dpx icon frame is out of date - regenerate the .syso", dir, sizes[i])
+			}
+		}
+	}
+
+	manifest, err := os.ReadFile("../../cmd/vds-setup/setup.manifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	syso, err := os.ReadFile("../../cmd/vds-setup/rsrc_windows_amd64.syso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(syso, manifest) {
+		t.Error("cmd/vds-setup: setup.manifest is not what the .syso embeds - regenerate the .syso")
 	}
 }

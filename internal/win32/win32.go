@@ -23,6 +23,7 @@ var (
 	procShellExecuteW = modShell32.NewProc("ShellExecuteW")
 
 	procGetModuleHandleW    = modKernel32.NewProc("GetModuleHandleW")
+	procLoadCursorW         = modUser32.NewProc("LoadCursorW")
 	procRegisterClassExW    = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW     = modUser32.NewProc("CreateWindowExW")
 	procDefWindowProcW      = modUser32.NewProc("DefWindowProcW")
@@ -96,9 +97,13 @@ func UTF16Ptr(s string) *uint16 {
 }
 
 // RegisterClass registers a window class with the given window procedure
-// (from syscall.NewCallback) and background brush (0 for none).
+// (from syscall.NewCallback) and background brush (0 for none), using the
+// normal arrow cursor.
 func RegisterClass(name string, wndProc uintptr, background syscall.Handle) error {
+	const idcArrow = 32512
+	cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
 	wc := wndClassExW{
+		hCursor:       syscall.Handle(cursor),
 		lpfnWndProc:   wndProc,
 		hInstance:     ModuleHandle(),
 		hbrBackground: background,

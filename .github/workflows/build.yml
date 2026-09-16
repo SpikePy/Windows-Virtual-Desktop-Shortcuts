@@ -44,7 +44,7 @@ jobs:
           CGO_ENABLED: 0
 
       - name: Build Setup_VirtualDesktopShortcuts.exe
-        run: go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o Setup_VirtualDesktopShortcuts.exe ./cmd/vds-setup
+        run: go build -trimpath -ldflags "-H=windowsgui -s -w -X main.version=${{ github.ref_name }}" -o Setup_VirtualDesktopShortcuts.exe ./cmd/vds-setup
         env:
           GOOS: windows
           GOARCH: amd64

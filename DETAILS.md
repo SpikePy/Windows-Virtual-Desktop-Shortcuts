@@ -106,17 +106,17 @@ internal/tray/                tray icon, menu, runtime-drawn glyph
 internal/desktopicon/         the glyph's geometry, shared with tools/genicon
 internal/config/              config.yaml loading, writing and watching
 internal/win32/               Win32 declarations shared between packages
-internal/setup/               install/uninstall and WinINet download
+internal/setup/               install/uninstall, WinINet download, setup window
 internal/autostart/           the Startup shortcut, shared by the app and setup
-internal/setupmenu/           setup's console menu (OS-independent, tested)
+internal/setupmenu/           setup's countdown and auto-close (OS-independent, tested)
 internal/singleinstance/      named-mutex guard
 internal/applog/              opt-in log file next to the exe
 tools/genicon/                renders the glyph to an .ico
 ```
 
 The decision logic (`hotkeys`, `config`, `setupmenu`, `desktopicon`,
-`genicon`) has no OS dependency and is covered by table tests that run
-anywhere; the Windows-only packages are covered by vet and a
+`genicon`, and Setup's release-URL parsing in `internal/setup/release.go`)
+has no OS dependency and is covered by table tests that run anywhere; the Windows-only packages are covered by vet and a
 cross-compile.
 
 ## Building
@@ -125,11 +125,11 @@ Requires Go 1.23+. From the repo root:
 
 ```sh
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui -s -w" -o VirtualDesktopShortcuts.exe ./cmd/virtualdesktopshortcuts
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o Setup_VirtualDesktopShortcuts.exe ./cmd/vds-setup
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui -s -w" -o Setup_VirtualDesktopShortcuts.exe ./cmd/vds-setup
 ```
 
-(`-H=windowsgui` prevents a console window from flashing on startup; the
-Setup program is a console program and deliberately omits it.) The build
+(`-H=windowsgui` makes both GUI programs, so neither opens a console
+window.) The build
 has no cgo dependency, so it cross compiles cleanly from Linux/macOS as
 well as natively on Windows.
 
@@ -151,18 +151,24 @@ buffer are addresses supplied by Win32, outside anything Go's object graph
 tracks. That's inherent to raw Win32 interop, and vet's static heuristic
 can't tell it apart from a real misuse.
 
-### Icon
+### Icon and manifest
 
 Both exes carry the same file icon, generated from the same glyph the tray
 uses and committed as a `rsrc_windows_amd64.syso` per `cmd` directory,
-which `go build` links in automatically. To regenerate after changing
-`internal/desktopicon`:
+which `go build` links in automatically. Setup's also embeds
+[`cmd/vds-setup/setup.manifest`](cmd/vds-setup/setup.manifest), which
+turns on current-looking controls (common controls v6) and per-monitor DPI
+awareness. To regenerate after changing `internal/desktopicon` or the
+manifest:
 
 ```sh
 go run ./tools/genicon desktops.ico
 go run github.com/akavel/rsrc@latest -ico desktops.ico -arch amd64 -o cmd/virtualdesktopshortcuts/rsrc_windows_amd64.syso
-go run github.com/akavel/rsrc@latest -ico desktops.ico -arch amd64 -o cmd/vds-setup/rsrc_windows_amd64.syso
+go run github.com/akavel/rsrc@latest -ico desktops.ico -manifest cmd/vds-setup/setup.manifest -arch amd64 -o cmd/vds-setup/rsrc_windows_amd64.syso
 ```
+
+A test in `tools/genicon` fails if either `.syso` no longer matches the
+glyph or the manifest.
 
 ## Running
 
@@ -174,34 +180,39 @@ message and exit.
 
 ## Setup tool (`cmd/vds-setup`)
 
-`Setup_VirtualDesktopShortcuts.exe` is a small console program that, when
-run, asks what to do:
+`Setup_VirtualDesktopShortcuts.exe` opens a small window showing the
+app's icon, name and version, with two buttons:
 
-```
-Virtual Desktop Shortcuts - Setup
-
-  1) Install / update
-  2) Uninstall
-
-Choose an option [1-2] (installing/updating automatically in 5 seconds if nothing is chosen):
-```
-
-- **1) Install / update** downloads the newest GitHub release into
-  `%LOCALAPPDATA%\VirtualDesktopShortcuts`, adds a shortcut to your
+- **Install / update** (the default) downloads the newest GitHub release
+  into `%LOCALAPPDATA%\VirtualDesktopShortcuts`, adds a shortcut to your
   Startup folder (`FOLDERID_Startup`, written through the shell's
   `IShellLink`, exactly like dragging a program in there yourself) if
   `config.yaml` says `autostart: true` - or removes it if not - and
-  starts it. This is also the default: if nothing is chosen within 5
-  seconds, it runs on its own, which suits unattended or scripted setup.
-- **2) Uninstall** removes the Startup shortcut, stops the running app and
+  starts it. The button counts down from 5: if nobody presses a key or
+  clicks in the window by then, it runs on its own.
+- **Uninstall** removes the Startup shortcut, stops the running app and
   deletes the installed directory, `config.yaml` included.
 
-When the action was auto-chosen and succeeded, the window closes itself
-after 3 seconds; otherwise it waits for Enter, so an error stays readable.
+Enter picks the default button and Escape closes the window before
+anything has started. Each step is shown in the window while it runs,
+which stays responsive because the work happens on a separate goroutine.
+When the countdown chose the action and it succeeded, the window closes
+itself after 3 seconds; otherwise it stays open with the result (or the
+error) until you close it.
+
+The window is plain Win32 controls - no toolkit or web view - drawn with
+the system message font, scaled for the monitor's DPI.
 
 Downloads go through **WinINet**, Windows' own HTTP stack, rather than
 Go's `net/http`: that uses the system proxy settings and certificate
 store, and keeps several MB of TLS code out of the exe.
+
+Setup never calls the GitHub API, whose limit of 60 anonymous requests an
+hour per IP makes installs fail on shared or busy networks. It downloads
+`https://github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/releases/latest/download/VirtualDesktopShortcuts.exe`,
+which GitHub redirects to the newest release's file, and learns the
+version by requesting `.../releases/latest` without following the
+redirect: the `Location` header ends in `/releases/tag/<version>`.
 
 It's safe to run any time, including repeatedly: install/update always
 writes the same fixed path and shortcut name, so it never creates
@@ -210,17 +221,21 @@ Installs from v0.0.27 and earlier put the exe straight into the Startup
 folder; that copy is removed on both install and uninstall, so the app
 can't end up starting twice.
 
-Flags for scripted use:
+Flags for scripted use. With `-mode`, no window opens and progress is
+printed to the console Setup was started from. `cmd.exe` and PowerShell
+don't wait for a windowed program, so its output can appear after the
+next prompt; use `start /wait` or `Start-Process -Wait`, or redirect the
+output to a file, when a script needs the result or the exit code.
 
 | Flag                 | Meaning                                                       |
 | -------------------- | ------------------------------------------------------------- |
-| `-mode install`      | Install or update without showing the menu                     |
-| `-mode uninstall`    | Uninstall without showing the menu                             |
+| `-mode install`      | Install or update without showing the window                   |
+| `-mode uninstall`    | Uninstall without showing the window                           |
 | `-install-dir DIR`   | Use DIR instead of `%LOCALAPPDATA%\VirtualDesktopShortcuts`    |
-| `-github-token TOK`  | Avoid the unauthenticated GitHub API rate limit (install only) |
 | `-no-launch`         | Install, but don't start it now (install only)                 |
 | `-no-autostart`      | Set `autostart: false` in `config.yaml`, so no Startup shortcut is added (install only) |
 | `-keep-files`        | Uninstall, but leave the installed files in place              |
+| `-github-token TOK`  | Ignored since v0.2.0 (no API calls any more); still accepted   |
 
 ## Releases
 

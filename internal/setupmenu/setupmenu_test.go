@@ -1,117 +1,72 @@
 package setupmenu
 
 import (
-	"bytes"
-	"strings"
+	"errors"
 	"testing"
 	"time"
 )
 
-func TestPromptChoices(t *testing.T) {
+func TestTimerCountsDownToExpiry(t *testing.T) {
+	tm := NewTimer(3 * time.Second)
+	wantLabels := []string{"Go (3)", "Go (2)", "Go (1)"}
+	for i, want := range wantLabels {
+		if got := tm.Label("Go"); got != want {
+			t.Errorf("before tick %d: Label = %q, want %q", i, got, want)
+		}
+		expired := tm.Tick()
+		if last := i == len(wantLabels)-1; expired != last {
+			t.Errorf("tick %d: expired = %t, want %t", i, expired, last)
+		}
+	}
+	if tm.Running() {
+		t.Error("timer still running after it expired")
+	}
+	if got := tm.Label("Go"); got != "Go" {
+		t.Errorf("expired Label = %q, want %q", got, "Go")
+	}
+	if tm.Tick() {
+		t.Error("an expired timer reported expiry again")
+	}
+}
+
+func TestStoppedTimerNeverExpires(t *testing.T) {
+	tm := NewTimer(2 * time.Second)
+	tm.Tick()
+	tm.Stop()
+	for i := 0; i < 5; i++ {
+		if tm.Tick() {
+			t.Fatalf("stopped timer expired on tick %d", i)
+		}
+	}
+	if tm.Running() || tm.Label("Go") != "Go" {
+		t.Errorf("stopped timer: Running %t, Label %q", tm.Running(), tm.Label("Go"))
+	}
+}
+
+func TestCountdownIsFiveSeconds(t *testing.T) {
+	tm := NewTimer(Countdown)
+	if got := tm.Label("Install / update"); got != "Install / update (5)" {
+		t.Errorf("Label = %q", got)
+	}
+}
+
+func TestCloseDelay(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name string
+		auto bool
+		err  error
+		want time.Duration
 	}{
-		{"1 installs", "1\n", "install"},
-		{"2 uninstalls", "2\n", "uninstall"},
-		{"surrounding spaces are ignored", "  2  \n", "uninstall"},
-		{"reprompts until a valid choice", "x\n\n1\n", "install"},
+		{"unattended success closes itself", true, nil, AutoCloseDelay},
+		{"unattended failure stays open", true, errors.New("boom"), 0},
+		{"chosen success stays open", false, nil, 0},
+		{"chosen failure stays open", false, errors.New("boom"), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var out bytes.Buffer
-			got, auto, err := Prompt(ReadLines(strings.NewReader(tt.input)), &out, time.Minute)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tt.want {
-				t.Errorf("Prompt = %q, want %q", got, tt.want)
-			}
-			if auto {
-				t.Error("Prompt reported the choice as automatic")
-			}
-			if !strings.Contains(out.String(), "Install / update") {
-				t.Errorf("menu was not printed:\n%s", out.String())
+			if got := CloseDelay(tt.auto, tt.err); got != tt.want {
+				t.Errorf("CloseDelay = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
-
-func TestPromptInstallsWhenNothingIsChosen(t *testing.T) {
-	var out bytes.Buffer
-	start := time.Now()
-	got, auto, err := Prompt(ReadLines(emptyBlockingReader{}), &out, 20*time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "install" || !auto {
-		t.Errorf("Prompt = %q, auto %v; want \"install\", true", got, auto)
-	}
-	if elapsed := time.Since(start); elapsed < 20*time.Millisecond {
-		t.Errorf("Prompt returned after %v, want at least the countdown", elapsed)
-	}
-	if !strings.Contains(out.String(), "No input received") {
-		t.Errorf("no countdown notice printed:\n%s", out.String())
-	}
-}
-
-// After an invalid entry the user has shown they're there, so the
-// countdown must not fire behind their back.
-func TestPromptStopsCountingDownOnceTheUserTypes(t *testing.T) {
-	var out bytes.Buffer
-	got, auto, err := Prompt(ReadLines(strings.NewReader("x\n2\n")), &out, 10*time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "uninstall" || auto {
-		t.Errorf("Prompt = %q, auto %v; want \"uninstall\", false", got, auto)
-	}
-}
-
-func TestPromptReportsAClosedInput(t *testing.T) {
-	var out bytes.Buffer
-	if _, _, err := Prompt(ReadLines(strings.NewReader("")), &out, 0); err == nil {
-		t.Error("Prompt returned no error for closed input")
-	}
-}
-
-func TestWaitForEnterReturnsOnEnter(t *testing.T) {
-	var out bytes.Buffer
-	done := make(chan struct{})
-	go func() {
-		WaitForEnter(ReadLines(strings.NewReader("\n")), &out, 0)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("WaitForEnter did not return after Enter")
-	}
-	if !strings.Contains(out.String(), "Press Enter to exit") {
-		t.Errorf("no prompt printed:\n%s", out.String())
-	}
-}
-
-func TestWaitForEnterReturnsOnTimeout(t *testing.T) {
-	var out bytes.Buffer
-	done := make(chan struct{})
-	go func() {
-		WaitForEnter(ReadLines(emptyBlockingReader{}), &out, 20*time.Millisecond)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("WaitForEnter did not return after its timeout")
-	}
-	if !strings.Contains(out.String(), "Exiting automatically") {
-		t.Errorf("no countdown printed:\n%s", out.String())
-	}
-}
-
-// emptyBlockingReader never returns data or an error, standing in for a
-// console nobody is typing at.
-type emptyBlockingReader struct{}
-
-func (emptyBlockingReader) Read([]byte) (int, error) { select {} }
