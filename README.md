@@ -25,22 +25,28 @@ does nothing either.
 
 Download `Setup_VirtualDesktopShortcuts.exe` from the
 [latest release](https://github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/releases/latest)
-and run it. It installs the app into your Startup folder, so it runs now
-and starts automatically when you sign in. Run it again any time to update
-to the newest release, or choose *Uninstall* to remove it.
+and run it. It installs the app into `%LOCALAPPDATA%\VirtualDesktopShortcuts`
+and adds a shortcut to your Startup folder, so it runs now and starts
+automatically when you sign in. Run it again any time to update to the
+newest release, or choose *Uninstall* to remove it.
 
-You can also just run `VirtualDesktopShortcuts.exe` yourself, from
-anywhere you like.
+Nothing here needs administrator rights, and nothing is installed for
+other users. You can also just run `VirtualDesktopShortcuts.exe` yourself,
+from anywhere you like.
 
 ## Tray icon
 
 The app runs in the system tray, showing its name and version on hover.
 **Left-click** the icon to turn the shortcuts on or off; while they're off
 the icon is grey with a red strike-through. **Right-click** for a menu with
-Enable/Disable, Configure (a small YAML config file) and Exit.
+Enable/Disable, Configure and Exit.
+
+Configure opens `config.yaml` in
+`%LOCALAPPDATA%\VirtualDesktopShortcuts`, which has one setting, `enabled`,
+mirroring the tray toggle. Edits are picked up within a couple of seconds,
+no restart needed.
 
 ## More
 
-[DETAILS.md](DETAILS.md) covers how it works, the config file, building
-from source, the Setup tool's command-line flags, releases and known
-limitations.
+[DETAILS.md](DETAILS.md) covers how it works, the command-line flags,
+building from source, the Setup tool, releases and known limitations.

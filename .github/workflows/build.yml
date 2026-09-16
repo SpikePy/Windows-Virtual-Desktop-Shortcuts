@@ -1,0 +1,68 @@
+name: Build and Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        # -unsafeptr=false: this program's unsafe.Pointer conversions of
+        # LPARAM hook payloads, COM vtable slots and CreateDIBSection's
+        # output buffer are addresses supplied by Win32, outside anything
+        # the Go object graph tracks. That's inherent to raw Win32 interop,
+        # not a bug - vet's static heuristic can't tell it apart from a
+        # real misuse.
+        run: go vet -unsafeptr=false ./...
+        env:
+          GOOS: windows
+          GOARCH: amd64
+
+      - name: Build VirtualDesktopShortcuts.exe
+        run: go build -trimpath -ldflags "-H=windowsgui -s -w -X main.version=${{ github.ref_name }}" -o VirtualDesktopShortcuts.exe ./cmd/virtualdesktopshortcuts
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+
+      - name: Build Setup_VirtualDesktopShortcuts.exe
+        run: go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o Setup_VirtualDesktopShortcuts.exe ./cmd/vds-setup
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VirtualDesktopShortcuts-exe
+          path: |
+            VirtualDesktopShortcuts.exe
+            Setup_VirtualDesktopShortcuts.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            VirtualDesktopShortcuts.exe
+            Setup_VirtualDesktopShortcuts.exe
+          generate_release_notes: true

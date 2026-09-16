@@ -1,0 +1,45 @@
+name: CI
+
+# Quick check on every push/PR to main: tests, vet, and a compile of both
+# exes, without publishing anything. Releases are build.yml's job,
+# triggered only by version tags.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test
+        # Runs the OS-independent packages natively; the Windows-only ones
+        # are covered by the vet and build steps below.
+        run: go test ./...
+
+      - name: Vet
+        # -unsafeptr=false: see the same step in build.yml.
+        run: go vet -unsafeptr=false ./...
+        env:
+          GOOS: windows
+          GOARCH: amd64
+
+      - name: Build
+        run: go build ./...
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
