@@ -11,6 +11,9 @@ number and moves windows between them, using Ctrl+Alt shortcuts.
 - `Ctrl+Alt+Shift+Left` / `Ctrl+Alt+Shift+Right` → move the focused window
   to the previous / next virtual desktop and switch along with it, so
   pressing it again keeps moving the same window
+- `Ctrl+Alt+scroll up` / `Ctrl+Alt+scroll down` → switch to the previous /
+  next virtual desktop, one per wheel notch (add `Shift` to take the
+  focused window along)
 
 Use the **left** Alt key. On layouts where the right Alt key is AltGr
 (German, for example), AltGr counts as Ctrl+Alt and types characters like
@@ -26,8 +29,10 @@ does nothing either.
 Download `Setup_VirtualDesktopShortcuts.exe` from the
 [latest release](https://github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/releases/latest)
 and run it. It installs the app into `%LOCALAPPDATA%\VirtualDesktopShortcuts`
-and adds a shortcut to your Startup folder, so it runs now and starts
-automatically when you sign in. Run it again any time to update to the
+and starts it. While the `autostart` setting is on (the default), the app
+keeps a shortcut to itself in your Startup folder, so it starts
+automatically when you sign in; turn the setting off and the shortcut is
+removed. Run it again any time to update to the
 newest release, or choose *Uninstall* to remove it.
 
 Nothing here needs administrator rights, and nothing is installed for
@@ -42,8 +47,9 @@ the icon is grey with a red strike-through. **Right-click** for a menu with
 Enable/Disable, Configure and Exit.
 
 Configure opens `config.yaml` in
-`%LOCALAPPDATA%\VirtualDesktopShortcuts`, which has one setting, `enabled`,
-mirroring the tray toggle. Edits are picked up within a couple of seconds,
+`%LOCALAPPDATA%\VirtualDesktopShortcuts`, which has two settings:
+`enabled`, mirroring the tray toggle, and `autostart`, whether it starts
+when you sign in. Edits are picked up within a couple of seconds,
 no restart needed.
 
 ## More

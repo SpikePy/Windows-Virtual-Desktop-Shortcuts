@@ -2,9 +2,9 @@
 
 // Package setup implements the install and uninstall actions shared by
 // Setup_VirtualDesktopShortcuts.exe: downloading VirtualDesktopShortcuts.exe
-// into the user's own %LOCALAPPDATA% and registering it for autostart, and
-// reversing that - removing the autostart shortcut, stopping any running
-// copy, and deleting the installed files.
+// into the user's own %LOCALAPPDATA% and adding the autostart shortcut if
+// config.yaml asks for it, and reversing that - removing the shortcut,
+// stopping any running copy, and deleting the installed files.
 //
 // Everything here is per-user, so none of it needs administrator rights.
 package setup
@@ -21,6 +21,9 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/autostart"
+	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/config"
 )
 
 const (
@@ -29,12 +32,6 @@ const (
 
 	// assetName is the release asset and the installed exe's name.
 	assetName = "VirtualDesktopShortcuts.exe"
-
-	// startupLinkName is the shortcut dropped in the user's own Startup
-	// folder. Versions up to v0.0.27 installed the exe itself there
-	// instead; legacyStartupExe exists only to clean that up.
-	startupLinkName  = "VirtualDesktopShortcuts.lnk"
-	legacyStartupExe = "VirtualDesktopShortcuts.exe"
 
 	userAgent = "Setup_VirtualDesktopShortcuts"
 )
@@ -71,14 +68,14 @@ type InstallOptions struct {
 	InstallDir  string // defaults to %LOCALAPPDATA%\VirtualDesktopShortcuts if empty
 	GitHubToken string // optional, avoids the unauthenticated API rate limit
 	NoLaunch    bool   // install/update without starting it now
-	NoAutostart bool   // don't create (or refresh) the Startup shortcut
+	NoAutostart bool   // turn autostart off in config.yaml instead of following it
 }
 
 // Install downloads the latest released VirtualDesktopShortcuts.exe,
-// installs it under the current user's %LOCALAPPDATA%, adds a shortcut to
-// the Startup folder, and (re)starts it - terminating any already-running
-// copy first so the file can be replaced and so at most one copy is ever
-// running. Safe to re-run to update in place: it always ends up with
+// installs it under the current user's %LOCALAPPDATA%, adds or removes the
+// Startup shortcut as config.yaml's autostart setting says, and (re)starts
+// it - terminating any already-running copy first so the file can be
+// replaced and so at most one copy is ever running. Safe to re-run to update in place: it always ends up with
 // exactly one shortcut (the same fixed name) and one running instance (the
 // app itself also refuses to start a second copy via a named mutex - see
 // internal/singleinstance - so this is belt and suspenders).
@@ -125,11 +122,22 @@ func Install(opts InstallOptions) error {
 		return fmt.Errorf("installing: %w", err)
 	}
 
-	if !opts.NoAutostart {
-		fmt.Println("Adding it to the Startup folder...")
-		if err := setAutostart(targetPath); err != nil {
-			return fmt.Errorf("registering autostart: %w", err)
+	if opts.NoAutostart {
+		if err := config.SetAutostart(false); err != nil {
+			return fmt.Errorf("turning autostart off in config.yaml: %w", err)
 		}
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("reading config.yaml: %w", err)
+	}
+	if cfg.Autostart {
+		fmt.Println("Adding it to the Startup folder...")
+	} else {
+		fmt.Println("Autostart is off in config.yaml - leaving it out of the Startup folder...")
+	}
+	if err := autostart.Apply(cfg.Autostart, targetPath); err != nil {
+		return fmt.Errorf("updating autostart: %w", err)
 	}
 
 	if !opts.NoLaunch {
@@ -161,7 +169,7 @@ func Uninstall(opts UninstallOptions) error {
 	}
 
 	fmt.Println("Removing it from the Startup folder...")
-	if err := removeAutostart(); err != nil {
+	if err := autostart.Apply(false, ""); err != nil {
 		return fmt.Errorf("removing autostart: %w", err)
 	}
 
@@ -229,52 +237,6 @@ func replaceFile(tmpPath, targetPath string) error {
 	}
 	os.Remove(tmpPath)
 	return err
-}
-
-// startupDir is the current user's own Startup folder. Being per-user,
-// writing there needs no administrator rights, and the user can see what's
-// in it from Explorer.
-func startupDir() (string, error) {
-	dir, err := windows.KnownFolderPath(windows.FOLDERID_Startup, 0)
-	if err != nil {
-		return "", fmt.Errorf("locating the Startup folder: %w", err)
-	}
-	return dir, nil
-}
-
-func setAutostart(targetPath string) error {
-	dir, err := startupDir()
-	if err != nil {
-		return err
-	}
-	if err := createShortcut(filepath.Join(dir, startupLinkName), targetPath, "Virtual Desktop Shortcuts"); err != nil {
-		return err
-	}
-	return removeLegacyStartupExe(dir)
-}
-
-func removeAutostart() error {
-	dir, err := startupDir()
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(filepath.Join(dir, startupLinkName)); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return removeLegacyStartupExe(dir)
-}
-
-// removeLegacyStartupExe deletes the copy of the exe that versions up to
-// v0.0.27 installed directly into the Startup folder, so the program isn't
-// started twice after an update.
-func removeLegacyStartupExe(dir string) error {
-	path := filepath.Join(dir, legacyStartupExe)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	// A leftover temp file from an interrupted update of that old layout.
-	os.Remove(path + ".new")
-	return nil
 }
 
 // terminateRunning finds every running process whose image file name

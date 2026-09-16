@@ -2,8 +2,8 @@
 
 // Command virtualdesktopshortcuts runs in the background and turns
 // Ctrl+Alt+1..9 into "switch to virtual desktop N", Ctrl+Alt+Left/Right
-// into "switch to the previous/next desktop", and the same with Shift into
-// moving the focused window there instead.
+// and Ctrl+Alt+wheel up/down into "switch to the previous/next desktop",
+// and the same with Shift into moving the focused window there instead.
 //
 // Only the left Alt key counts: on layouts where the right Alt key is
 // AltGr it reports Ctrl+Alt as held too, and AltGr+digit types characters
@@ -30,11 +30,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"time"
 
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/applog"
+	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/autostart"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/config"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/hook"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/hotkeys"
@@ -52,6 +54,10 @@ const (
 	appName     = "Virtual Desktop Shortcuts"
 	mutexName   = `Local\VirtualDesktopShortcuts_SingleInstance`
 	logFileName = "VirtualDesktopShortcuts.log"
+
+	// exeName is the installed exe, next to config.yaml - what the Startup
+	// shortcut points at.
+	exeName = "VirtualDesktopShortcuts.exe"
 
 	// configPollInterval is how often the config file is checked for
 	// outside edits, e.g. made in the editor Configure opened.
@@ -103,6 +109,7 @@ func main() {
 
 	a := &app{logf: logf}
 	a.enabled.Store(*enabled)
+	a.applyAutostart(cfg.Autostart)
 
 	if err := a.run(); err != nil {
 		logf("EXCEPTION %v", err)
@@ -154,7 +161,7 @@ func (a *app) run() error {
 
 	h := hook.New(requests, a.enabled.Load)
 	if err := h.Install(); err != nil {
-		return fmt.Errorf("installing the keyboard hook: %w", err)
+		return fmt.Errorf("installing the input hooks: %w", err)
 	}
 	defer h.Uninstall()
 
@@ -186,9 +193,23 @@ func (a *app) refreshIcon() {
 	}
 }
 
+// applyAutostart adds or removes the Startup shortcut to the installed exe
+// to match the autostart setting. A failure is only logged: the shortcuts
+// work either way.
+func (a *app) applyAutostart(on bool) {
+	path, err := config.Path()
+	if err == nil {
+		err = autostart.Apply(on, filepath.Join(filepath.Dir(path), exeName))
+	}
+	if err != nil {
+		a.logf("WARNING updating autostart=%t: %v", on, err)
+	}
+}
+
 // configChanged runs on the watcher's goroutine, so it only stores the new
 // state and asks the message-loop thread to redraw the icon.
 func (a *app) configChanged(cfg config.Config) {
+	a.applyAutostart(cfg.Autostart)
 	if cfg.Enabled == a.enabled.Load() {
 		return
 	}

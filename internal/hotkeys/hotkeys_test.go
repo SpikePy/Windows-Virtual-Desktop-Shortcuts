@@ -97,3 +97,71 @@ func TestModifiersHeld(t *testing.T) {
 		})
 	}
 }
+
+func TestWheel(t *testing.T) {
+	prev := Request{Action: ActionSwitch, Index: -1, Relative: true}
+	next := Request{Action: ActionSwitch, Index: 1, Relative: true}
+	shift := Modifiers{Ctrl: true, LeftAlt: true, Shift: true}
+
+	type step struct {
+		delta int
+		mods  Modifiers
+		want  Request
+		fire  bool
+		ok    bool
+	}
+	tests := []struct {
+		name  string
+		steps []step
+	}{
+		{"Ctrl+Alt+scroll up switches to the previous desktop", []step{
+			{delta: WheelNotch, mods: ctrlAlt, want: prev, fire: true, ok: true},
+		}},
+		{"Ctrl+Alt+scroll down switches to the next desktop", []step{
+			{delta: -WheelNotch, mods: ctrlAlt, want: next, fire: true, ok: true},
+		}},
+		{"Shift moves the window instead", []step{
+			{delta: -WheelNotch, mods: shift, want: Request{Action: ActionMove, Index: 1, Relative: true}, fire: true, ok: true},
+		}},
+		{"a fast spin still moves one desktop", []step{
+			{delta: 3 * WheelNotch, mods: ctrlAlt, want: prev, fire: true, ok: true},
+			{delta: 30, mods: ctrlAlt, ok: true},
+		}},
+		{"small steps add up to one notch", []step{
+			{delta: -40, mods: ctrlAlt, ok: true},
+			{delta: -40, mods: ctrlAlt, ok: true},
+			{delta: -40, mods: ctrlAlt, want: next, fire: true, ok: true},
+		}},
+		{"changing direction starts over", []step{
+			{delta: 80, mods: ctrlAlt, ok: true},
+			{delta: -80, mods: ctrlAlt, ok: true},
+			{delta: -40, mods: ctrlAlt, want: next, fire: true, ok: true},
+		}},
+		{"releasing the modifiers drops pending movement", []step{
+			{delta: 80, mods: ctrlAlt, ok: true},
+			{delta: 80},
+			{delta: 80, mods: ctrlAlt, ok: true},
+		}},
+		{"plain scrolling is left alone", []step{
+			{delta: WheelNotch},
+		}},
+		{"Ctrl+scroll (zoom) is left alone", []step{
+			{delta: WheelNotch, mods: Modifiers{Ctrl: true}},
+		}},
+		{"AltGr+scroll is left alone", []step{
+			{delta: WheelNotch, mods: Modifiers{Ctrl: true, RightAlt: true}},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var w Wheel
+			for i, s := range tt.steps {
+				req, fire, ok := w.Scroll(s.delta, s.mods)
+				if req != s.want || fire != s.fire || ok != s.ok {
+					t.Errorf("step %d: Scroll(%d) = %+v, fire %t, ok %t; want %+v, fire %t, ok %t",
+						i, s.delta, req, fire, ok, s.want, s.fire, s.ok)
+				}
+			}
+		})
+	}
+}

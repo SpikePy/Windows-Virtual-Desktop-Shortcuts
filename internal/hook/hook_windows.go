@@ -1,7 +1,8 @@
 //go:build windows
 
-// Package hook installs the low-level keyboard hook that intercepts this
-// program's shortcuts before the focused application sees them.
+// Package hook installs the low-level keyboard and mouse hooks that
+// intercept this program's shortcuts before the focused application (or,
+// for the mouse wheel, the one under the pointer) sees them.
 //
 // RegisterHotKey isn't used because a Ctrl+Alt hotkey would also fire for
 // AltGr, which layouts like German use to type characters such as '{'
@@ -11,6 +12,7 @@
 package hook
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
 
@@ -30,7 +32,10 @@ var (
 
 const (
 	whKeyboardLL = 13
+	whMouseLL    = 14
 	hcAction     = 0
+
+	wmMouseWheel = 0x020A
 
 	wmKeyDown    = 0x0100
 	wmKeyUp      = 0x0101
@@ -55,13 +60,29 @@ type kbdllhookstruct struct {
 	DwExtraInfo uintptr
 }
 
-// Hook is an installed keyboard hook. Create one with New and install it
-// on the thread that runs the message loop.
+// msllhookstruct mirrors the Win32 MSLLHOOKSTRUCT layout used by
+// WH_MOUSE_LL hook callbacks.
+type msllhookstruct struct {
+	X, Y        int32
+	MouseData   uint32
+	Flags       uint32
+	Time        uint32
+	DwExtraInfo uintptr
+}
+
+// Hook is a pair of installed keyboard and mouse hooks. Create one with
+// New and install it on the thread that runs the message loop.
 type Hook struct {
-	handle   windows.Handle
-	requests chan<- hotkeys.Request
-	enabled  func() bool
-	callback uintptr
+	handle        windows.Handle
+	mouseHandle   windows.Handle
+	requests      chan<- hotkeys.Request
+	enabled       func() bool
+	callback      uintptr
+	mouseCallback uintptr
+
+	// wheel is only touched by mouseProc, which always runs on the thread
+	// that installed the hook.
+	wheel hotkeys.Wheel
 }
 
 // New returns a hook that sends recognised shortcuts to requests, and asks
@@ -70,32 +91,55 @@ type Hook struct {
 func New(requests chan<- hotkeys.Request, enabled func() bool) *Hook {
 	h := &Hook{requests: requests, enabled: enabled}
 	h.callback = syscall.NewCallback(h.proc)
+	h.mouseCallback = syscall.NewCallback(h.mouseProc)
 	return h
 }
 
-// Install registers the hook with Windows. It must be called on a thread
-// that pumps a message loop, and that thread must keep running for the
-// hook to keep receiving keys.
+// Install registers both hooks with Windows. It must be called on a
+// thread that pumps a message loop, and that thread must keep running for
+// the hooks to keep receiving input.
 func (h *Hook) Install() error {
 	r0, _, err := procSetWindowsHookExW.Call(whKeyboardLL, h.callback, 0, 0)
 	if r0 == 0 {
-		return err
+		return fmt.Errorf("keyboard hook: %w", err)
 	}
 	h.handle = windows.Handle(r0)
+
+	r0, _, err = procSetWindowsHookExW.Call(whMouseLL, h.mouseCallback, 0, 0)
+	if r0 == 0 {
+		h.Uninstall()
+		return fmt.Errorf("mouse hook: %w", err)
+	}
+	h.mouseHandle = windows.Handle(r0)
 	return nil
 }
 
-// Uninstall removes the hook. Safe to call if it was never installed.
+// Uninstall removes the hooks. Safe to call if they were never installed.
 func (h *Hook) Uninstall() {
-	if h.handle != 0 {
-		procUnhookWindowsHookEx.Call(uintptr(h.handle))
-		h.handle = 0
+	for _, handle := range []*windows.Handle{&h.handle, &h.mouseHandle} {
+		if *handle != 0 {
+			procUnhookWindowsHookEx.Call(uintptr(*handle))
+			*handle = 0
+		}
 	}
 }
 
-func (h *Hook) callNext(nCode, wParam, lParam uintptr) uintptr {
-	r0, _, _ := procCallNextHookEx.Call(uintptr(h.handle), nCode, wParam, lParam)
+func callNext(handle windows.Handle, nCode, wParam, lParam uintptr) uintptr {
+	r0, _, _ := procCallNextHookEx.Call(uintptr(handle), nCode, wParam, lParam)
 	return r0
+}
+
+func (h *Hook) callNext(nCode, wParam, lParam uintptr) uintptr {
+	return callNext(h.handle, nCode, wParam, lParam)
+}
+
+// send hands a request to the switcher without ever blocking a hook
+// callback: if the switcher is still busy, the request is dropped.
+func (h *Hook) send(req hotkeys.Request) {
+	select {
+	case h.requests <- req:
+	default:
+	}
 }
 
 func keyDown(vk int) bool {
@@ -134,12 +178,29 @@ func (h *Hook) proc(nCode, wParam, lParam uintptr) uintptr {
 	}
 
 	if isDown {
-		select {
-		case h.requests <- req:
-		default:
-			// Switcher is busy; drop the request rather than blocking
-			// this hook callback.
-		}
+		h.send(req)
+	}
+	return 1
+}
+
+// mouseProc is the WH_MOUSE_LL hook procedure. Like proc it must return
+// quickly. It only looks at vertical wheel events: Ctrl+Alt+wheel is
+// swallowed so the window under the pointer doesn't scroll or zoom, and
+// turns into a previous/next desktop request once a full notch has built
+// up.
+func (h *Hook) mouseProc(nCode, wParam, lParam uintptr) uintptr {
+	if int32(nCode) != hcAction || wParam != wmMouseWheel || !h.enabled() {
+		return callNext(h.mouseHandle, nCode, wParam, lParam)
+	}
+
+	ms := (*msllhookstruct)(unsafe.Pointer(lParam))
+	delta := int(int16(ms.MouseData >> 16))
+	req, fire, ok := h.wheel.Scroll(delta, modifiers())
+	if !ok {
+		return callNext(h.mouseHandle, nCode, wParam, lParam)
+	}
+	if fire {
+		h.send(req)
 	}
 	return 1
 }

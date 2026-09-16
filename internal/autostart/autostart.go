@@ -1,21 +1,77 @@
 //go:build windows
 
-package setup
+// Package autostart keeps the shortcut in the user's own Startup folder in
+// line with the autostart setting: exactly one VirtualDesktopShortcuts.lnk
+// pointing at the installed exe while it's on, none while it's off. Both
+// the app and the Setup program use it.
+package autostart
 
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// Autostart is a shortcut in the user's own Startup folder, created
-// through the shell's IShellLink COM object - the same file Explorer
-// writes when you drag a program in there. It is per-user, so nothing
-// here needs administrator rights.
+const (
+	// linkName is the shortcut in the Startup folder. Versions up to
+	// v0.0.27 put the exe itself there instead; legacyExe exists only to
+	// clean that up.
+	linkName  = "VirtualDesktopShortcuts.lnk"
+	legacyExe = "VirtualDesktopShortcuts.exe"
+)
+
+// Apply makes the Startup folder match enabled: a shortcut to target when
+// it's on, no shortcut when it's off. A shortcut that already points at
+// target is left alone, so calling this on every config change is cheap.
+// If target doesn't exist (e.g. a build run from somewhere else) no
+// shortcut is created, since it would only point at nothing.
+func Apply(enabled bool, target string) error {
+	// COM is initialised per OS thread, so this goroutine must not move
+	// between CoInitializeEx and CoUninitialize.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	dir, err := windows.KnownFolderPath(windows.FOLDERID_Startup, 0)
+	if err != nil {
+		return fmt.Errorf("locating the Startup folder: %w", err)
+	}
+	link := filepath.Join(dir, linkName)
+	removeLegacyExe(dir)
+
+	if !enabled {
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if _, err := os.Stat(target); err != nil {
+		return fmt.Errorf("not adding autostart for %s: %w", target, err)
+	}
+	if current, err := shortcutTarget(link); err == nil && strings.EqualFold(current, target) {
+		return nil
+	}
+	return createShortcut(link, target, "Virtual Desktop Shortcuts")
+}
+
+// removeLegacyExe deletes the copy of the exe that versions up to v0.0.27
+// installed directly into the Startup folder, so the program isn't
+// started twice.
+func removeLegacyExe(dir string) {
+	path := filepath.Join(dir, legacyExe)
+	os.Remove(path)
+	// A leftover temp file from an interrupted update of that old layout.
+	os.Remove(path + ".new")
+}
+
+// The shortcut is written through the shell's IShellLink COM object - the
+// same file Explorer writes when you drag a program in there.
 var (
 	modOle32             = windows.NewLazySystemDLL("ole32.dll")
 	procCoCreateInstance = modOle32.NewProc("CoCreateInstance")

@@ -8,11 +8,21 @@ works, how to configure and build it, and what it can't do.
 `config.yaml` lives in `%LOCALAPPDATA%\VirtualDesktopShortcuts`, next to
 the installed exe, and is created with defaults the first time the app
 runs. The tray menu's **Configure** opens it in whatever application
-Windows associates with `.yaml`. It currently has one setting:
+Windows associates with `.yaml`. It has two settings:
 
-| Setting   | Default | Meaning                                                |
-| --------- | ------- | ------------------------------------------------------ |
-| `enabled` | `true`  | Whether the shortcuts are active, same as the tray toggle |
+| Setting     | Default | Meaning                                                    |
+| ----------- | ------- | ---------------------------------------------------------- |
+| `enabled`   | `true`  | Whether the shortcuts are active, same as the tray toggle  |
+| `autostart` | `true`  | Whether the app starts when you sign in (see below)        |
+
+While `autostart` is `true`, the app makes sure the Startup folder holds
+exactly one `VirtualDesktopShortcuts.lnk`, pointing at
+`%LOCALAPPDATA%\VirtualDesktopShortcuts\VirtualDesktopShortcuts.exe`;
+while it's `false`, the app deletes that shortcut. It checks at launch and
+again whenever `config.yaml` changes, so flipping the setting takes effect
+within a couple of seconds. The shortcut always points at the installed
+exe, never at a copy run from somewhere else, and isn't created at all if
+the installed exe doesn't exist.
 
 Unknown keys are ignored, so a file written by another version still
 loads, and an unreadable value falls back to that setting's default rather
@@ -55,14 +65,23 @@ before — this app detects whether it's running on Windows 10 (builds
 10240–21999) or Windows 11 (builds 22000+) and uses the matching interface
 IDs for each, but a future Windows feature update could still break it.
 
-The shortcuts are handled by a low-level keyboard hook (`WH_KEYBOARD_LL`)
-rather than `RegisterHotKey`, because a registered Ctrl+Alt hotkey would
+The shortcuts are handled by low-level keyboard and mouse hooks
+(`WH_KEYBOARD_LL`, `WH_MOUSE_LL`) rather than `RegisterHotKey`, because a registered Ctrl+Alt hotkey would
 also fire for AltGr and take away the characters it types. The hook checks
 which Alt key is held and swallows the key-down and key-up of the digit or
 arrow for these shortcuts, so the focused app never sees them. Windows
 ignores a hook that takes too long to answer, so the hook procedure only
 classifies the keystroke and hands it to another goroutine over a
 non-blocking channel; every COM call happens there.
+
+The mouse hook only looks at the vertical wheel. While Ctrl and the left
+Alt are held, it swallows wheel events so the window under the pointer
+neither scrolls nor zooms, and adds up their movement: once it reaches a
+full notch (120 units, so high-resolution wheels and touchpads behave like
+a normal wheel) it asks for the previous desktop (scrolling up) or the next
+one (scrolling down) and starts counting again. Changing direction or
+letting go of the keys drops whatever had built up, and a fast spin moves
+one desktop per event rather than several at once.
 
 Moving a window to a desktop *could* use the one piece of this that's a
 documented, public API — `IVirtualDesktopManager::MoveWindowToDesktop` —
@@ -80,14 +99,15 @@ actually works.
 ```
 cmd/virtualdesktopshortcuts/  the tray app
 cmd/vds-setup/                install/uninstall program
-internal/hotkeys/             which keystroke means which desktop action
-internal/hook/                the low-level keyboard hook
+internal/hotkeys/             which keystroke or wheel movement means which action
+internal/hook/                the low-level keyboard and mouse hooks
 internal/vdesktop/            the undocumented virtual-desktop COM calls
 internal/tray/                tray icon, menu, runtime-drawn glyph
 internal/desktopicon/         the glyph's geometry, shared with tools/genicon
 internal/config/              config.yaml loading, writing and watching
 internal/win32/               Win32 declarations shared between packages
-internal/setup/               install/uninstall, WinINet download, shortcut
+internal/setup/               install/uninstall and WinINet download
+internal/autostart/           the Startup shortcut, shared by the app and setup
 internal/setupmenu/           setup's console menu (OS-independent, tested)
 internal/singleinstance/      named-mutex guard
 internal/applog/              opt-in log file next to the exe
@@ -169,7 +189,8 @@ Choose an option [1-2] (installing/updating automatically in 5 seconds if nothin
 - **1) Install / update** downloads the newest GitHub release into
   `%LOCALAPPDATA%\VirtualDesktopShortcuts`, adds a shortcut to your
   Startup folder (`FOLDERID_Startup`, written through the shell's
-  `IShellLink`, exactly like dragging a program in there yourself) and
+  `IShellLink`, exactly like dragging a program in there yourself) if
+  `config.yaml` says `autostart: true` - or removes it if not - and
   starts it. This is also the default: if nothing is chosen within 5
   seconds, it runs on its own, which suits unattended or scripted setup.
 - **2) Uninstall** removes the Startup shortcut, stops the running app and
@@ -198,7 +219,7 @@ Flags for scripted use:
 | `-install-dir DIR`   | Use DIR instead of `%LOCALAPPDATA%\VirtualDesktopShortcuts`    |
 | `-github-token TOK`  | Avoid the unauthenticated GitHub API rate limit (install only) |
 | `-no-launch`         | Install, but don't start it now (install only)                 |
-| `-no-autostart`      | Install, but don't add the Startup shortcut (install only)     |
+| `-no-autostart`      | Set `autostart: false` in `config.yaml`, so no Startup shortcut is added (install only) |
 | `-keep-files`        | Uninstall, but leave the installed files in place              |
 
 ## Releases

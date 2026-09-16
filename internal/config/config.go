@@ -20,9 +20,12 @@ import (
 	"time"
 )
 
-// DefaultEnabled is both what a fresh config.yaml says and the fallback
-// when the file is missing or the value can't be read.
-const DefaultEnabled = true
+// The defaults are both what a fresh config.yaml says and the fallback
+// when the file is missing or a value can't be read.
+const (
+	DefaultEnabled   = true
+	DefaultAutostart = true
+)
 
 const (
 	dirName  = "VirtualDesktopShortcuts"
@@ -38,15 +41,26 @@ const template = `# VirtualDesktopShortcuts configuration
 # app. You can also toggle this from the tray icon, and override it for a
 # single run with -enabled.
 enabled: %t
+
+# autostart: start the app when you sign in to Windows. While this is true
+# the app keeps a shortcut to itself in your Startup folder; set it to
+# false and that shortcut is removed.
+autostart: %t
 `
 
 // Config holds the settings read from config.yaml. Keys it doesn't know
 // are ignored, so a file written by a newer or older version still loads.
 type Config struct {
-	Enabled bool
+	Enabled   bool
+	Autostart bool
 }
 
-func defaults() Config { return Config{Enabled: DefaultEnabled} }
+func defaults() Config { return Config{Enabled: DefaultEnabled, Autostart: DefaultAutostart} }
+
+// defaultFile is the text of a freshly created config.yaml.
+func defaultFile() []byte {
+	return []byte(fmt.Sprintf(template, DefaultEnabled, DefaultAutostart))
+}
 
 // Load reads config.yaml, creating it with default values on first run.
 // Any error, or an unreadable value, falls back to that field's default
@@ -62,7 +76,7 @@ func Load() (Config, error) {
 
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		if werr := os.WriteFile(path, []byte(fmt.Sprintf(template, DefaultEnabled)), 0o644); werr != nil {
+		if werr := os.WriteFile(path, defaultFile(), 0o644); werr != nil {
 			return def, fmt.Errorf("writing default config.yaml: %w", werr)
 		}
 		return def, nil
@@ -82,14 +96,20 @@ func parse(text string) Config {
 		if !ok {
 			continue
 		}
+		var field *bool
 		switch key {
 		case "enabled":
-			switch value {
-			case "true":
-				cfg.Enabled = true
-			case "false":
-				cfg.Enabled = false
-			}
+			field = &cfg.Enabled
+		case "autostart":
+			field = &cfg.Autostart
+		default:
+			continue
+		}
+		switch value {
+		case "true":
+			*field = true
+		case "false":
+			*field = false
 		}
 	}
 	return cfg
@@ -138,7 +158,7 @@ func Ensure() (string, error) {
 		return "", err
 	}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(path, []byte(fmt.Sprintf(template, DefaultEnabled)), 0o644); err != nil {
+		if err := os.WriteFile(path, defaultFile(), 0o644); err != nil {
 			return "", fmt.Errorf("writing default config.yaml: %w", err)
 		}
 	} else if err != nil {
@@ -147,12 +167,16 @@ func Ensure() (string, error) {
 	return path, nil
 }
 
-var enabledLineRE = regexp.MustCompile(`(?m)^([ \t]*enabled[ \t]*:[ \t]*)\S+(.*)$`)
+// SetEnabled saves the enabled setting - see set.
+func SetEnabled(enabled bool) error { return set("enabled", enabled) }
 
-// SetEnabled updates the enabled value in place, preserving the rest of
-// the file (comments included) so the user's own edits survive a toggle
-// from the tray. If the key isn't there, it's appended.
-func SetEnabled(enabled bool) error {
+// SetAutostart saves the autostart setting - see set.
+func SetAutostart(autostart bool) error { return set("autostart", autostart) }
+
+// set updates one boolean setting in place, preserving the rest of the
+// file (comments included) so the user's own edits survive a change made
+// from the tray or Setup. If the key isn't there, it's appended.
+func set(key string, value bool) error {
 	path, err := Ensure()
 	if err != nil {
 		return err
@@ -161,19 +185,22 @@ func SetEnabled(enabled bool) error {
 	if err != nil {
 		return err
 	}
+	return os.WriteFile(path, setIn(data, key, value), 0o644)
+}
 
-	value := fmt.Sprintf("%t", enabled)
-	var out []byte
-	if enabledLineRE.Match(data) {
-		out = enabledLineRE.ReplaceAll(data, []byte("${1}"+value+"$2"))
-	} else {
-		out = data
-		if len(out) > 0 && out[len(out)-1] != '\n' {
-			out = append(out, '\n')
-		}
-		out = append(out, []byte("enabled: "+value+"\n")...)
+// setIn returns data with key's value replaced by value, or with
+// "key: value" appended if the key isn't set anywhere.
+func setIn(data []byte, key string, value bool) []byte {
+	re := regexp.MustCompile(`(?m)^([ \t]*` + regexp.QuoteMeta(key) + `[ \t]*:[ \t]*)\S+(.*)$`)
+	v := fmt.Sprintf("%t", value)
+	if re.Match(data) {
+		return re.ReplaceAll(data, []byte("${1}"+v+"$2"))
 	}
-	return os.WriteFile(path, out, 0o644)
+	out := append([]byte(nil), data...)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	return append(out, []byte(key+": "+v+"\n")...)
 }
 
 // Watch polls config.yaml and calls onChange whenever its contents change

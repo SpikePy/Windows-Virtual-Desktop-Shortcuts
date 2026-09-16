@@ -38,8 +38,8 @@ func main() {
 	mode := flag.String("mode", "", "skip the interactive menu and run this action directly: install or uninstall")
 	installDir := flag.String("install-dir", "", "directory to install into/remove from (default: %LOCALAPPDATA%\\VirtualDesktopShortcuts)")
 	githubToken := flag.String("github-token", "", "optional GitHub token, to avoid the unauthenticated API rate limit (install only)")
-	noLaunch := flag.Bool("no-launch", false, "install/update and add the Startup shortcut, but don't start it now (install only)")
-	noAutostart := flag.Bool("no-autostart", false, "don't create (or refresh) the Startup shortcut (install only)")
+	noLaunch := flag.Bool("no-launch", false, "install/update, but don't start it now (install only)")
+	noAutostart := flag.Bool("no-autostart", false, "set autostart: false in config.yaml, so no Startup shortcut is added (install only)")
 	keepFiles := flag.Bool("keep-files", false, "remove the Startup shortcut and stop the process, but don't delete the installed files (uninstall only)")
 	flag.Parse()
 

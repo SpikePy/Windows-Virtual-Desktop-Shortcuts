@@ -32,8 +32,10 @@ func TestLoadCreatesDefaultFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default config.yaml was not created: %v", err)
 	}
-	if !strings.Contains(string(data), "enabled: true") {
-		t.Errorf("created config.yaml is missing \"enabled: true\":\n%s", data)
+	for _, want := range []string{"enabled: true", "autostart: true"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("created config.yaml is missing %q:\n%s", want, data)
+		}
 	}
 
 	again, err := Load()
@@ -48,15 +50,17 @@ func TestLoad(t *testing.T) {
 		yaml string
 		want Config
 	}{
-		{"enabled true", "enabled: true\n", Config{Enabled: true}},
-		{"enabled false", "enabled: false\n", Config{Enabled: false}},
-		{"indented and spaced", "  enabled:   false  \n", Config{Enabled: false}},
-		{"trailing comment", "enabled: false # off for now\n", Config{Enabled: false}},
-		{"quoted value", `enabled: "false"` + "\n", Config{Enabled: false}},
-		{"comments and blank lines only", "# nothing here\n\n", Config{Enabled: true}},
-		{"unknown keys are ignored", "shortcut: ctrl+alt\nenabled: false\n", Config{Enabled: false}},
-		{"unreadable value keeps the default", "enabled: maybe\n", Config{Enabled: true}},
-		{"missing key keeps the default", "other: 1\n", Config{Enabled: true}},
+		{"enabled true", "enabled: true\n", Config{Enabled: true, Autostart: true}},
+		{"enabled false", "enabled: false\n", Config{Enabled: false, Autostart: true}},
+		{"autostart false", "autostart: false\n", Config{Enabled: true, Autostart: false}},
+		{"both set", "enabled: false\nautostart: false\n", Config{Enabled: false, Autostart: false}},
+		{"indented and spaced", "  enabled:   false  \n", Config{Enabled: false, Autostart: true}},
+		{"trailing comment", "enabled: false # off for now\n", Config{Enabled: false, Autostart: true}},
+		{"quoted value", `autostart: "false"` + "\n", Config{Enabled: true, Autostart: false}},
+		{"comments and blank lines only", "# nothing here\n\n", defaults()},
+		{"unknown keys are ignored", "shortcut: ctrl+alt\nenabled: false\n", Config{Enabled: false, Autostart: true}},
+		{"unreadable value keeps the default", "enabled: maybe\nautostart: 1\n", defaults()},
+		{"missing key keeps the default", "other: 1\n", defaults()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,6 +130,44 @@ func TestSetEnabledAppendsAMissingKey(t *testing.T) {
 	cfg, err := Load()
 	if err != nil || cfg.Enabled {
 		t.Errorf("Load = %+v, %v; want Enabled false", cfg, err)
+	}
+}
+
+func TestSetAutostartLeavesEnabledAlone(t *testing.T) {
+	useTempDir(t)
+	if err := SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetAutostart(false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil || cfg != (Config{Enabled: false, Autostart: false}) {
+		t.Errorf("Load = %+v, %v; want both false", cfg, err)
+	}
+	if err := SetAutostart(true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load()
+	if err != nil || cfg != (Config{Enabled: false, Autostart: true}) {
+		t.Errorf("Load = %+v, %v; want Enabled false, Autostart true", cfg, err)
+	}
+}
+
+func TestSetInAppendsOnlyWhenMissing(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"replaces in place", "a: 1\nautostart: true # note\n", "a: 1\nautostart: false # note\n"},
+		{"appends with a newline", "# x", "# x\nautostart: false\n"},
+		{"appends to empty", "", "autostart: false\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(setIn([]byte(tt.in), "autostart", false)); got != tt.want {
+				t.Errorf("setIn = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
