@@ -109,7 +109,7 @@ func runApp(requests chan<- desktopRequest) error {
 	hook := newKeyboardHook(requests)
 	if err := hook.install(); err != nil {
 		messageBoxError(
-			fmt.Sprintf("Failed to install the keyboard hook for Win+1..9:\n%v", err),
+			fmt.Sprintf("Failed to install the keyboard hook for the shortcuts:\n%v", err),
 			appName,
 		)
 		return err

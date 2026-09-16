@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// hotkeysEnabled gates whether the keyboard hook intercepts Win+1..9. It's
+// hotkeysEnabled gates whether the keyboard hook intercepts its shortcuts. It's
 // the single source of truth shared between the tray menu's Enable/Disable
 // items and the config file's `enabled` setting; both read and write it,
 // and the hook checks it on every keystroke.
@@ -28,7 +28,7 @@ const defaultConfigTemplate = `# VirtualDesktopShortcuts configuration
 # Edit and save this file to change how the app behaves. Changes are
 # picked up automatically within a couple of seconds -- no restart needed.
 
-# Turn the Win+1..9 shortcuts on or off without uninstalling the app.
+# Turn the Ctrl+Alt shortcuts on or off without uninstalling the app.
 # You can also toggle this from the tray icon's right-click menu.
 enabled: true
 `

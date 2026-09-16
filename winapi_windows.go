@@ -23,10 +23,6 @@ var (
 	procCallNextHookEx      = modUser32.NewProc("CallNextHookEx")
 	procGetAsyncKeyState    = modUser32.NewProc("GetAsyncKeyState")
 	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
-	procSendInput           = modUser32.NewProc("SendInput")
-	procFindWindowW         = modUser32.NewProc("FindWindowW")
-	procGetWindowThreadPID  = modUser32.NewProc("GetWindowThreadProcessId")
-	procAttachThreadInput   = modUser32.NewProc("AttachThreadInput")
 
 	procRegisterClassExW = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowExW  = modUser32.NewProc("CreateWindowExW")
@@ -73,14 +69,12 @@ const (
 	vkRWin    = 0x5C
 	vkControl = 0x11
 	vkShift   = 0x10
-	vkMenu    = 0x12
+	vkLMenu   = 0xA4 // left Alt
+	vkRMenu   = 0xA5 // right Alt (AltGr on some layouts)
 	vk1       = 0x31
 	vk9       = 0x39
 	vkLeft    = 0x25
 	vkRight   = 0x27
-	// vkMenuMask is an unassigned virtual-key code, used purely as a
-	// harmless keystroke to inject (see lowLevelKeyboardProc).
-	vkMenuMask = 0xE8
 
 	wmDestroy      = 0x0002
 	wmCommand      = 0x0111
@@ -120,39 +114,10 @@ const (
 	mbOK        = 0x00000000
 
 	clsctxLocalServer = 0x4
-
-	inputKeyboard  = 1
-	keyeventfKeyUp = 0x0002
 )
 
 type point struct {
 	X, Y int32
-}
-
-// input mirrors the Win32 INPUT struct (winuser.h) for the keyboard
-// (INPUT_KEYBOARD) case only, laid out to match the real x64 ABI size (40
-// bytes: an 8-byte header, unioned with up to a 32-byte MOUSEINPUT) even
-// though only the KEYBDINPUT fields are ever populated -- SendInput
-// validates the caller's struct size against its own sizeof(INPUT) and
-// fails outright on a mismatch.
-type input struct {
-	inputType uint32
-	_         uint32 // pad to 8-byte-align the union, matching the C layout
-	wVk       uint16
-	wScan     uint16
-	dwFlags   uint32
-	time      uint32
-	extraInfo uintptr
-	_         [8]byte // pad the union out to MOUSEINPUT's size
-}
-
-// sendKeyTap injects a key-down followed by a key-up for vk via SendInput.
-func sendKeyTap(vk uint16) {
-	ins := [2]input{
-		{inputType: inputKeyboard, wVk: vk},
-		{inputType: inputKeyboard, wVk: vk, dwFlags: keyeventfKeyUp},
-	}
-	procSendInput.Call(uintptr(len(ins)), uintptr(unsafe.Pointer(&ins[0])), unsafe.Sizeof(ins[0]))
 }
 
 type msg struct {
@@ -267,36 +232,4 @@ func hrFailed(hr uintptr) bool {
 func getForegroundWindow() uintptr {
 	r0, _, _ := procGetForegroundWindow.Call()
 	return r0
-}
-
-// desktopWindow returns Explorer's desktop window ("Progman"), which is
-// shown on every virtual desktop and belongs to no app, or 0 if it can't
-// be found.
-func desktopWindow() uintptr {
-	r0, _, _ := procFindWindowW.Call(uintptr(unsafe.Pointer(mustUTF16Ptr("Progman"))), 0)
-	return r0
-}
-
-// activateWindow makes hwnd the foreground window and reports whether that
-// worked. Windows normally only lets the app that owns the foreground
-// window hand focus elsewhere, so this briefly attaches the calling
-// thread to that window's input queue first, the usual workaround.
-func activateWindow(hwnd uintptr) bool {
-	if hwnd == 0 {
-		return false
-	}
-	fg := getForegroundWindow()
-	if fg == hwnd {
-		return true
-	}
-	self := uintptr(windows.GetCurrentThreadId())
-	if fg != 0 {
-		fgThread, _, _ := procGetWindowThreadPID.Call(fg, 0)
-		if fgThread != 0 && fgThread != self {
-			procAttachThreadInput.Call(self, fgThread, 1)
-			defer procAttachThreadInput.Call(self, fgThread, 0)
-		}
-	}
-	r0, _, _ := procSetForegroundWnd.Call(hwnd)
-	return r0 != 0
 }

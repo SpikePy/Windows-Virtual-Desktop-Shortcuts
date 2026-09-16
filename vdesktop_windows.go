@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"runtime"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -80,26 +79,14 @@ func guid(s string) *windows.GUID {
 type desktopSwitcher struct {
 	iidManagerInternal *windows.GUID
 	iidVirtualDesktop  *windows.GUID
-	// requests lets stayOnDesktop stop watching as soon as a newer request
-	// is waiting.
-	requests <-chan desktopRequest
 }
-
-// After Win+Shift+N moves a window, stayOnDesktop keeps the view where it
-// was until stayCheckWindow after Win and Shift are released (at most
-// maxStayCheck in total).
-const (
-	stayCheckWindow = 750 * time.Millisecond
-	maxStayCheck    = 3 * time.Second
-	maxSwitchBacks  = 2
-)
 
 // desktopAction identifies what a hotkey-triggered request should do.
 type desktopAction int
 
 const (
-	actionSwitchToDesktop     desktopAction = iota // Win+N, Win+Left/Right
-	actionMoveWindowToDesktop                      // Win+Shift+N, Win+Shift+Left/Right
+	actionSwitchToDesktop     desktopAction = iota // Ctrl+Alt+N, Ctrl+Alt+Left/Right
+	actionMoveWindowToDesktop                      // the same with Shift
 )
 
 type desktopRequest struct {
@@ -127,7 +114,6 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 	sw := &desktopSwitcher{
 		iidManagerInternal: iidVirtualDesktopManagerInternalWin10,
 		iidVirtualDesktop:  iidVirtualDesktopWin10,
-		requests:           requests,
 	}
 	if ver.BuildNumber >= 22000 {
 		sw.iidManagerInternal = iidVirtualDesktopManagerInternalWin11
@@ -146,26 +132,7 @@ func runDesktopSwitcher(requests <-chan desktopRequest) {
 
 // handle resolves a request's target desktop and carries it out. Relative
 // requests past the first or last desktop do nothing.
-//
-// Before acting, it takes focus away from whatever app has it by focusing
-// the desktop, after noting the focused window for the move actions.
 func (sw *desktopSwitcher) handle(req desktopRequest) error {
-	// With the shortcut's key swallowed, Windows would see Win pressed and
-	// released on its own and open the Start menu. Tapping an unassigned
-	// key while Win is still held prevents that (the same "menu mask key"
-	// trick AutoHotkey uses). It's sent from here rather than from the
-	// hook so the hook returns as fast as possible.
-	sendKeyTap(vkMenuMask)
-
-	desktop := desktopWindow()
-	hwnd := getForegroundWindow()
-	if hwnd == desktop {
-		hwnd = 0
-	}
-	if !activateWindow(desktop) {
-		debugLogf("handle: couldn't move focus to the desktop")
-	}
-
 	index := req.index
 	if req.relative {
 		current, err := sw.currentDesktopIndex()
@@ -182,20 +149,12 @@ func (sw *desktopSwitcher) handle(req desktopRequest) error {
 	case req.action == actionSwitchToDesktop:
 		return sw.switchTo(index)
 	case !req.relative:
-		start, err := sw.currentDesktopIndex()
-		if err != nil {
-			return err
-		}
-		debugLogf("handle: moving window %X from desktop %d to %d, foreground is %X",
-			hwnd, start+1, index+1, getForegroundWindow())
-		moved, err := sw.moveWindowTo(hwnd, index)
-		if err != nil || !moved {
-			return err
-		}
-		return sw.stayOnDesktop(start)
+		_, err := sw.moveWindowTo(getForegroundWindow(), index)
+		return err
 	default:
-		// Win+Shift+Left/Right takes the window along and refocuses it,
-		// so pressing it again keeps moving the same window.
+		// Ctrl+Alt+Shift+Left/Right takes the window along and keeps it
+		// focused, so pressing it again keeps moving the same window.
+		hwnd := getForegroundWindow()
 		moved, err := sw.moveWindowTo(hwnd, index)
 		if err != nil || !moved {
 			return err
@@ -203,46 +162,9 @@ func (sw *desktopSwitcher) handle(req desktopRequest) error {
 		if err := sw.switchTo(index); err != nil {
 			return err
 		}
-		if !activateWindow(hwnd) {
-			debugLogf("handle: couldn't refocus the moved window")
-		}
+		procSetForegroundWnd.Call(hwnd)
 		return nil
 	}
-}
-
-// stayOnDesktop keeps the view on the desktop at index after Win+Shift+N
-// moved a window away: Windows can follow the moved window to its new
-// desktop (e.g. when it still has or regains focus there), so this
-// switches back if the view leaves, until shortly after Win and Shift are
-// released or a newer request arrives.
-func (sw *desktopSwitcher) stayOnDesktop(index int) error {
-	stop := time.Now().Add(maxStayCheck)
-	deadline := time.Now().Add(stayCheckWindow)
-	switchBacks := 0
-	for time.Now().Before(deadline) && time.Now().Before(stop) && len(sw.requests) == 0 {
-		time.Sleep(50 * time.Millisecond)
-		if winKeyHeld() || isKeyDown(vkShift) {
-			deadline = time.Now().Add(stayCheckWindow)
-		}
-		current, err := sw.currentDesktopIndex()
-		if err != nil {
-			return err
-		}
-		if current == index {
-			continue
-		}
-		if switchBacks == maxSwitchBacks {
-			return fmt.Errorf("view kept following the moved window away from desktop %d", index+1)
-		}
-		switchBacks++
-		debugLogf("handle: view followed the moved window to desktop %d, switching back to %d (%d/%d)",
-			current+1, index+1, switchBacks, maxSwitchBacks)
-		if err := sw.switchTo(index); err != nil {
-			return err
-		}
-		activateWindow(desktopWindow())
-	}
-	return nil
 }
 
 // queryManagerInternal fetches the undocumented VirtualDesktopManagerInternal
@@ -371,7 +293,7 @@ func (sw *desktopSwitcher) currentDesktopIndex() (int, error) {
 }
 
 // switchTo switches to the desktop at the given zero-based index. If no
-// such desktop exists, or it's already the current one, it does nothing.
+// such desktop exists, it does nothing (returns nil).
 func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	provider, err := coCreateInstance(clsidImmersiveShell, clsctxLocalServer, iidIServiceProvider)
 	if err != nil {
@@ -394,29 +316,11 @@ func (sw *desktopSwitcher) switchTo(zeroBasedIndex int) error {
 	}
 	defer comRelease(desktop)
 
-	targetID, err := desktopID(desktop)
-	if err != nil {
-		return err
-	}
-	currentID, err := currentDesktopID(managerInternal)
-	if err != nil {
-		return err
-	}
-	debugLogf("switchTo(%d): on %s, target %s", zeroBasedIndex+1, shortID(currentID), shortID(targetID))
-	if currentID == targetID {
-		return nil
-	}
-
 	hr := comCall(managerInternal, slotManagerInternalSwitchDesktop, uintptr(desktop))
 	if hrFailed(hr) {
 		return fmt.Errorf("switch_desktop: hr=0x%08X", uint32(hr))
 	}
 	return nil
-}
-
-// shortID abbreviates a desktop GUID for log output.
-func shortID(id windows.GUID) string {
-	return fmt.Sprintf("%08X", id.Data1)
 }
 
 // queryViewCollection fetches IApplicationViewCollection through the

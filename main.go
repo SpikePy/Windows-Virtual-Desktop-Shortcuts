@@ -1,9 +1,9 @@
 //go:build windows
 
 // Command VirtualDesktopShortcuts lets you jump directly to the Nth Windows
-// virtual desktop with Win+1 through Win+9, the way Win+1..9 already jumps
-// to the Nth pinned taskbar app, and move the focused window to the Nth
-// virtual desktop with Win+Shift+1 through Win+Shift+9.
+// virtual desktop with Ctrl+Alt+1 through Ctrl+Alt+9, or to the previous or
+// next one with Ctrl+Alt+Left/Right, and move the focused window there by
+// adding Shift.
 //
 // It runs quietly in the system tray. Right-click the tray icon to Enable
 // or Disable the shortcuts, Configure the app via its YAML config file, or
