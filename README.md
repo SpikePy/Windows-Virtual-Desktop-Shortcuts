@@ -41,9 +41,10 @@ from anywhere you like.
 
 ## Tray icon
 
-The app runs in the system tray, showing its name and version on hover.
-**Left-click** the icon to turn the shortcuts on or off; while they're off
-the icon is grey with a red strike-through. **Right-click** for a menu with
+The app runs in the system tray, showing its name, version and whether it's
+enabled or disabled on hover. **Left-click** the icon to turn the
+shortcuts on or off; while they're off the icon is grey with a red
+strike-through. **Right-click** for a menu with
 Enable/Disable, Configure and Exit.
 
 Configure opens `config.yaml` in

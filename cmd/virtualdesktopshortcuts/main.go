@@ -175,14 +175,13 @@ func (a *app) run() error {
 }
 
 // showIcon puts the icon matching the current state in the tray, with the
-// version in its tooltip.
+// app name, version and enabled/disabled state in its tooltip.
 func (a *app) showIcon() error {
-	icon := a.iconEnabled
-	state := "on"
+	icon, state := a.iconEnabled, "enabled"
 	if !a.enabled.Load() {
-		icon, state = a.iconDisabled, "off"
+		icon, state = a.iconDisabled, "disabled"
 	}
-	return tray.SetIcon(a.hwnd, icon, fmt.Sprintf("%s %s (shortcuts %s)", appName, version, state))
+	return tray.SetIcon(a.hwnd, icon, fmt.Sprintf("%s %s (%s)", appName, version, state))
 }
 
 // refreshIcon updates the tray icon, called on the message-loop thread
