@@ -28,8 +28,8 @@ does nothing either.
 
 Download `Setup_VirtualDesktopShortcuts.exe` from the
 [latest release](https://github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/releases/latest)
-and run it. A small window offers **Install / update** and **Uninstall**;
-if you don't choose within 5 seconds, it installs on its own. Installing
+and run it. It offers **Install/Update**, **Uninstall** and **Close**; if
+you don't click anything within 5 seconds, it installs on its own. Installing
 puts the app into `%LOCALAPPDATA%\VirtualDesktopShortcuts` and starts it.
 While the `autostart` setting is on (the default), the app keeps a
 shortcut to itself in your Startup folder, so it starts automatically when
@@ -46,7 +46,7 @@ The app runs in the system tray, showing its name, version and whether it's
 enabled or disabled on hover. **Left-click** the icon to turn the
 shortcuts on or off; while they're off the icon is grey with a red
 strike-through. **Right-click** for a menu with
-Enable/Disable, Configure and Exit.
+Enable and Disable (the active one is checked), Configure and Exit.
 
 Configure opens `config.yaml` in
 `%LOCALAPPDATA%\VirtualDesktopShortcuts`, which has two settings:

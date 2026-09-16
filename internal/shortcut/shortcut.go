@@ -1,10 +1,10 @@
 //go:build windows
 
-// Package autostart keeps the shortcut in the user's own Startup folder in
-// line with the autostart setting: exactly one VirtualDesktopShortcuts.lnk
-// pointing at the installed exe while it's on, none while it's off. Both
-// the app and the Setup program use it.
-package autostart
+// Package shortcut manages the app's shortcut in the user's own Startup
+// folder, keeping it in line with the autostart setting: exactly one
+// VirtualDesktopShortcuts.lnk pointing at the installed exe while it's on,
+// none while it's off. Both the app and the Setup program use it.
+package shortcut
 
 import (
 	"errors"
@@ -27,12 +27,12 @@ const (
 	legacyExe = "VirtualDesktopShortcuts.exe"
 )
 
-// Apply makes the Startup folder match enabled: a shortcut to target when
+// Autostart makes the Startup folder match enabled: a shortcut to target when
 // it's on, no shortcut when it's off. A shortcut that already points at
 // target is left alone, so calling this on every config change is cheap.
 // If target doesn't exist (e.g. a build run from somewhere else) no
 // shortcut is created, since it would only point at nothing.
-func Apply(enabled bool, target string) error {
+func Autostart(enabled bool, target string) error {
 	// COM is initialised per OS thread, so this goroutine must not move
 	// between CoInitializeEx and CoUninitialize.
 	runtime.LockOSThread()

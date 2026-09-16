@@ -44,7 +44,7 @@ const (
 	nifTip     = 0x00000004
 
 	mfString    = 0x00000000
-	mfGrayed    = 0x00000001
+	mfChecked   = 0x00000008
 	mfSeparator = 0x00000800
 
 	tpmRightButton = 0x0002
@@ -211,9 +211,9 @@ func RemoveIcon(hwnd uintptr) {
 // reserved (means "nothing selected"); a zero-value MenuItem renders as a
 // separator.
 type MenuItem struct {
-	ID       uint32
-	Label    string
-	Disabled bool
+	ID      uint32
+	Label   string
+	Checked bool // shows a checkmark, e.g. on the state that's active
 }
 
 // ShowMenu displays a popup menu at the current cursor position, owned by
@@ -232,8 +232,8 @@ func ShowMenu(hwnd uintptr, items []MenuItem) uint32 {
 			continue
 		}
 		flags := uintptr(mfString)
-		if it.Disabled {
-			flags |= mfGrayed
+		if it.Checked {
+			flags |= mfChecked
 		}
 		procAppendMenuW.Call(hMenu, flags, uintptr(it.ID), uintptr(unsafe.Pointer(win32.UTF16Ptr(it.Label))))
 	}

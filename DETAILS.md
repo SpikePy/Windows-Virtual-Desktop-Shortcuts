@@ -49,6 +49,10 @@ accented, drawn in code at runtime rather than loaded from an image file
 it). While the shortcuts are off, the same glyph is drawn grey with a
 diagonal red strike.
 
+Left-click toggles the shortcuts. The right-click menu has **Enable**,
+**Disable**, **Configure** and **Exit**; the menu is built fresh each time
+it opens, with a checkmark on whichever of Enable/Disable is active.
+
 Explorer drops every tray icon when it restarts or crashes, so the tray
 package listens for the `TaskbarCreated` broadcast and adds the icon back;
 otherwise it would disappear for good until the app was restarted.
@@ -98,7 +102,7 @@ actually works.
 
 ```
 cmd/virtualdesktopshortcuts/  the tray app
-cmd/vds-setup/                install/uninstall program
+cmd/vds-setup/                Setup: the task dialog (dialog.go) and -mode
 internal/hotkeys/             which keystroke or wheel movement means which action
 internal/hook/                the low-level keyboard and mouse hooks
 internal/vdesktop/            the undocumented virtual-desktop COM calls
@@ -106,17 +110,16 @@ internal/tray/                tray icon, menu, runtime-drawn glyph
 internal/desktopicon/         the glyph's geometry, shared with tools/genicon
 internal/config/              config.yaml loading, writing and watching
 internal/win32/               Win32 declarations shared between packages
-internal/setup/               install/uninstall, WinINet download, setup window
-internal/autostart/           the Startup shortcut, shared by the app and setup
-internal/setupmenu/           setup's countdown and auto-close (OS-independent, tested)
+internal/setup/               install/uninstall, WinINet download, release links, countdowns
+internal/shortcut/            the Startup shortcut, shared by the app and Setup
 internal/singleinstance/      named-mutex guard
 internal/applog/              opt-in log file next to the exe
 tools/genicon/                renders the glyph to an .ico
 ```
 
-The decision logic (`hotkeys`, `config`, `setupmenu`, `desktopicon`,
-`genicon`, and Setup's release-URL parsing in `internal/setup/release.go`)
-has no OS dependency and is covered by table tests that run anywhere; the Windows-only packages are covered by vet and a
+The decision logic (`hotkeys`, `config`, `desktopicon`, `genicon`, and
+Setup's release-link parsing and countdowns in `internal/setup`) has no
+OS dependency and is covered by table tests that run anywhere; the Windows-only packages are covered by vet and a
 cross-compile.
 
 ## Building
@@ -180,28 +183,37 @@ message and exit.
 
 ## Setup tool (`cmd/vds-setup`)
 
-`Setup_VirtualDesktopShortcuts.exe` opens a small window showing the
-app's icon, name and version, with two buttons:
+`Setup_VirtualDesktopShortcuts.exe` opens a Windows task dialog (the
+same kind of dialog Windows itself uses) with the app's icon and three
+buttons:
 
-- **Install / update** (the default) downloads the newest GitHub release
+- **Install/Update** (the default) downloads the newest GitHub release
   into `%LOCALAPPDATA%\VirtualDesktopShortcuts`, adds a shortcut to your
   Startup folder (`FOLDERID_Startup`, written through the shell's
   `IShellLink`, exactly like dragging a program in there yourself) if
   `config.yaml` says `autostart: true` - or removes it if not - and
-  starts it. The button counts down from 5: if nobody presses a key or
-  clicks in the window by then, it runs on its own.
+  starts it. It works the same whether or not the app is installed yet.
 - **Uninstall** removes the Startup shortcut, stops the running app and
   deletes the installed directory, `config.yaml` included.
+- **Close** changes nothing. Escape and the title-bar X do the same.
 
-Enter picks the default button and Escape closes the window before
-anything has started. Each step is shown in the window while it runs,
-which stays responsive because the work happens on a separate goroutine.
-When the countdown chose the action and it succeeded, the window closes
-itself after 3 seconds; otherwise it stays open with the result (or the
-error) until you close it.
+The first page counts down "Installing/updating automatically in 5 s...";
+if no button is clicked by then, Install/Update runs on its own. The
+dialog then shows a progress page with the current step, with Close
+disabled until the work is done, and finally a result page. After a
+success it counts down "Closing in 5 s..." and closes itself (Close
+still closes at once). After an error it shows the error with the
+error icon and stays open until you close it.
 
-The window is plain Win32 controls - no toolkit or web view - drawn with
-the system message font, scaled for the monitor's DPI.
+How it's built: `TaskDialogIndirect` from Common Controls v6, which the
+embedded manifest requests (so `comctl32.dll` is loaded by bare name
+for the manifest to redirect it). Each page is its own callback context
+(`lpCallbackData`), the countdowns run on the dialog's timer
+notifications, and the install or uninstall runs on a separate
+goroutine that talks to the dialog only through `SendMessage`, so the
+dialog never freezes. The countdown arithmetic is in
+`internal/setup/countdown.go`, with tests. If the dialog can't open at
+all, Setup says so in a message box.
 
 Downloads go through **WinINet**, Windows' own HTTP stack, rather than
 Go's `net/http`: that uses the system proxy settings and certificate
@@ -221,7 +233,7 @@ Installs from v0.0.27 and earlier put the exe straight into the Startup
 folder; that copy is removed on both install and uninstall, so the app
 can't end up starting twice.
 
-Flags for scripted use. With `-mode`, no window opens and progress is
+Flags for scripted use. With `-mode`, no dialog opens and progress is
 printed to the console Setup was started from. `cmd.exe` and PowerShell
 don't wait for a windowed program, so its output can appear after the
 next prompt; use `start /wait` or `Start-Process -Wait`, or redirect the
@@ -229,8 +241,8 @@ output to a file, when a script needs the result or the exit code.
 
 | Flag                 | Meaning                                                       |
 | -------------------- | ------------------------------------------------------------- |
-| `-mode install`      | Install or update without showing the window                   |
-| `-mode uninstall`    | Uninstall without showing the window                           |
+| `-mode install`      | Install or update without the dialog or countdowns (`-mode background` does the same) |
+| `-mode uninstall`    | Uninstall without the dialog or countdowns                     |
 | `-install-dir DIR`   | Use DIR instead of `%LOCALAPPDATA%\VirtualDesktopShortcuts`    |
 | `-no-launch`         | Install, but don't start it now (install only)                 |
 | `-no-autostart`      | Set `autostart: false` in `config.yaml`, so no Startup shortcut is added (install only) |

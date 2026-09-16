@@ -1,7 +1,7 @@
 //go:build windows
 
-// Package setup implements Setup_VirtualDesktopShortcuts.exe: its window
-// (window.go), and the install and uninstall actions behind it -
+// Package setup implements the install and uninstall actions behind
+// Setup_VirtualDesktopShortcuts.exe (whose dialog lives in cmd/vds-setup):
 // downloading VirtualDesktopShortcuts.exe into the user's own
 // %LOCALAPPDATA% and adding the autostart shortcut if config.yaml asks for
 // it, and reversing that - removing the shortcut, stopping any running
@@ -21,8 +21,8 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/autostart"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/config"
+	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/shortcut"
 )
 
 const (
@@ -120,7 +120,7 @@ func Install(opts Options) (string, error) {
 	} else {
 		opts.progress("Autostart is off in config.yaml - leaving it out of the Startup folder...")
 	}
-	if err := autostart.Apply(cfg.Autostart, targetPath); err != nil {
+	if err := shortcut.Autostart(cfg.Autostart, targetPath); err != nil {
 		return "", fmt.Errorf("updating autostart: %w", err)
 	}
 
@@ -145,7 +145,7 @@ func Uninstall(opts Options) error {
 	}
 
 	opts.progress("Removing it from the Startup folder...")
-	if err := autostart.Apply(false, ""); err != nil {
+	if err := shortcut.Autostart(false, ""); err != nil {
 		return fmt.Errorf("removing autostart: %w", err)
 	}
 

@@ -3,10 +3,10 @@
 // Command vds-setup is the single entry point for installing, updating and
 // uninstalling VirtualDesktopShortcuts.exe. Run it with no arguments (e.g.
 // by double-clicking Setup_VirtualDesktopShortcuts.exe) and it opens a
-// small window to choose Install/update or Uninstall - installing/updating
-// on its own if nothing is chosen within 5 seconds. Pass -mode to skip the
-// window for scripted use; progress then goes to the console it was
-// started from.
+// task dialog with Install/Update, Uninstall and Close - installing/updating
+// on its own if nothing is clicked within 5 seconds (see dialog.go). Pass
+// -mode to skip the dialog for scripted use; progress then goes to the
+// console it was started from, with no countdowns.
 //
 // Built with -ldflags "-H=windowsgui", so double-clicking it never opens a
 // console window.
@@ -31,7 +31,7 @@ var version = "dev"
 var procAttachConsole = windows.NewLazySystemDLL("kernel32.dll").NewProc("AttachConsole")
 
 func main() {
-	mode := flag.String("mode", "", "skip the window and run this action directly: install or uninstall")
+	mode := flag.String("mode", "", "skip the dialog and run this action directly: install (or background, the same) or uninstall")
 	installDir := flag.String("install-dir", "", "directory to install into/remove from (default: %LOCALAPPDATA%\\VirtualDesktopShortcuts)")
 	noLaunch := flag.Bool("no-launch", false, "install/update, but don't start it now (install only)")
 	noAutostart := flag.Bool("no-autostart", false, "set autostart: false in config.yaml, so no Startup shortcut is added (install only)")
@@ -53,10 +53,10 @@ func main() {
 	}
 
 	if *mode == "" {
-		// The window shows its own errors; only failing to open it at all
+		// The dialog shows its own errors; only failing to open it at all
 		// needs a message box.
-		if err := setup.RunWindow(version, opts); err != nil {
-			if errors.Is(err, setup.ErrNoWindow) {
+		if err := runDialog(version, opts); err != nil {
+			if errors.Is(err, errNoDialog) {
 				win32.ErrorBox("Virtual Desktop Shortcuts Setup", err.Error())
 			}
 			os.Exit(1)
@@ -67,7 +67,7 @@ func main() {
 	opts.Progress = func(s string) { fmt.Println(s) }
 	var err error
 	switch strings.ToLower(*mode) {
-	case "install":
+	case "install", "background": // this app is only ever a background service
 		var tag string
 		if tag, err = setup.Install(opts); err == nil {
 			fmt.Printf("Installed %s.\n", tag)
@@ -77,7 +77,7 @@ func main() {
 			fmt.Println("Uninstalled.")
 		}
 	default:
-		err = fmt.Errorf("unknown -mode %q (want install or uninstall)", *mode)
+		err = fmt.Errorf("unknown -mode %q (want install, background or uninstall)", *mode)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

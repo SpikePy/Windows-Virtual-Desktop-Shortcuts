@@ -36,10 +36,10 @@ import (
 	"time"
 
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/applog"
-	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/autostart"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/config"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/hook"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/hotkeys"
+	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/shortcut"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/singleinstance"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/tray"
 	"github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/internal/vdesktop"
@@ -198,7 +198,7 @@ func (a *app) refreshIcon() {
 func (a *app) applyAutostart(on bool) {
 	path, err := config.Path()
 	if err == nil {
-		err = autostart.Apply(on, filepath.Join(filepath.Dir(path), exeName))
+		err = shortcut.Autostart(on, filepath.Join(filepath.Dir(path), exeName))
 	}
 	if err != nil {
 		a.logf("WARNING updating autostart=%t: %v", on, err)
@@ -235,8 +235,8 @@ func (a *app) setEnabled(enabled bool) {
 func (a *app) showMenu() {
 	enabled := a.enabled.Load()
 	switch tray.ShowMenu(a.hwnd, []tray.MenuItem{
-		{ID: menuEnable, Label: "Enable", Disabled: enabled},
-		{ID: menuDisable, Label: "Disable", Disabled: !enabled},
+		{ID: menuEnable, Label: "Enable", Checked: enabled},
+		{ID: menuDisable, Label: "Disable", Checked: !enabled},
 		{},
 		{ID: menuConfigure, Label: "Configure"},
 		{},
