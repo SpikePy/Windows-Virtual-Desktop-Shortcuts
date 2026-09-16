@@ -52,7 +52,7 @@ func resolveInstallDir(dir string) (string, error) {
 // Options configures Install and Uninstall.
 type Options struct {
 	InstallDir  string       // defaults to %LOCALAPPDATA%\VirtualDesktopShortcuts if empty
-	NoLaunch    bool         // install/update without starting it now
+	NoLaunch    bool         // install/update without starting it now, even with autostart on
 	NoAutostart bool         // install: turn autostart off in config.yaml instead of following it
 	KeepFiles   bool         // uninstall: remove autostart and stop the process, but leave the files
 	Progress    func(string) // told about each step; may be nil
@@ -66,54 +66,56 @@ func (o Options) progress(format string, args ...any) {
 
 // Install downloads the latest released VirtualDesktopShortcuts.exe,
 // installs it under the current user's %LOCALAPPDATA%, adds or removes the
-// Startup shortcut as config.yaml's autostart setting says, and (re)starts
-// it - terminating any already-running copy first so the file can be
-// replaced and so at most one copy is ever running. Safe to re-run to
+// Startup shortcut as config.yaml's autostart setting says, and - only
+// while autostart is on - (re)starts it, terminating any already-running
+// copy first so the file can be replaced and so at most one copy is ever
+// running. Safe to re-run to
 // update in place: it always ends up with at most one shortcut (the same
 // fixed name) and one running instance (the app itself also refuses to
 // start a second copy via a named mutex - see internal/singleinstance - so
-// this is belt and suspenders). It returns the installed release's tag.
-func Install(opts Options) (string, error) {
+// this is belt and suspenders). It returns the installed release's tag and
+// whether the app was started.
+func Install(opts Options) (tag string, started bool, err error) {
 	installDir, err := resolveInstallDir(opts.InstallDir)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
-		return "", fmt.Errorf("creating install dir: %w", err)
+		return "", false, fmt.Errorf("creating install dir: %w", err)
 	}
 	targetPath := filepath.Join(installDir, assetName)
 
 	opts.progress("Looking up the latest release...")
-	tag, err := latestTag()
+	tag, err = latestTag()
 	if err != nil {
-		return "", fmt.Errorf("looking up the latest release: %w", err)
+		return "", false, fmt.Errorf("looking up the latest release: %w", err)
 	}
 
 	opts.progress("Downloading %s...", tag)
 	tmpPath := targetPath + ".download"
 	if err := downloadFile(downloadURL(assetName), tmpPath); err != nil {
-		return "", fmt.Errorf("downloading %s: %w", assetName, err)
+		return "", false, fmt.Errorf("downloading %s: %w", assetName, err)
 	}
 
 	opts.progress("Stopping the running app...")
 	if err := terminateRunning(assetName); err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("stopping the running app: %w", err)
+		return "", false, fmt.Errorf("stopping the running app: %w", err)
 	}
 
 	opts.progress("Installing to %s...", targetPath)
 	if err := replaceFile(tmpPath, targetPath); err != nil {
-		return "", fmt.Errorf("installing: %w", err)
+		return "", false, fmt.Errorf("installing: %w", err)
 	}
 
 	if opts.NoAutostart {
 		if err := config.SetAutostart(false); err != nil {
-			return "", fmt.Errorf("turning autostart off in config.yaml: %w", err)
+			return "", false, fmt.Errorf("turning autostart off in config.yaml: %w", err)
 		}
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		return "", fmt.Errorf("reading config.yaml: %w", err)
+		return "", false, fmt.Errorf("reading config.yaml: %w", err)
 	}
 	if cfg.Autostart {
 		opts.progress("Adding it to the Startup folder...")
@@ -121,18 +123,19 @@ func Install(opts Options) (string, error) {
 		opts.progress("Autostart is off in config.yaml - leaving it out of the Startup folder...")
 	}
 	if err := shortcut.Autostart(cfg.Autostart, targetPath); err != nil {
-		return "", fmt.Errorf("updating autostart: %w", err)
+		return "", false, fmt.Errorf("updating autostart: %w", err)
 	}
 
-	if !opts.NoLaunch {
-		opts.progress("Starting it...")
-		cmd := exec.Command(targetPath)
-		cmd.Dir = installDir
-		if err := cmd.Start(); err != nil {
-			return "", fmt.Errorf("starting %s: %w", targetPath, err)
-		}
+	if !cfg.Autostart || opts.NoLaunch {
+		return tag, false, nil
 	}
-	return tag, nil
+	opts.progress("Starting it...")
+	cmd := exec.Command(targetPath)
+	cmd.Dir = installDir
+	if err := cmd.Start(); err != nil {
+		return "", false, fmt.Errorf("starting %s: %w", targetPath, err)
+	}
+	return tag, true, nil
 }
 
 // Uninstall reverses Install: removes the Startup shortcut, terminates any

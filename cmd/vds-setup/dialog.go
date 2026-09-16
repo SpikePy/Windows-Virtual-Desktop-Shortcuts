@@ -335,11 +335,16 @@ func work(hwnd uintptr, s *shared, install bool) {
 	var err error
 	if install {
 		var tag string
-		tag, err = setup.Install(opts)
+		var started bool
+		tag, started, err = setup.Install(opts)
 		instruction = fmt.Sprintf("Virtual Desktop Shortcuts %s is installed", tag)
-		text = "It's running now - look for its icon in the system tray. Right-click it for settings."
-		if opts.NoLaunch {
+		switch {
+		case started:
+			text = "It's running now - look for its icon in the system tray. Right-click it for settings."
+		case opts.NoLaunch:
 			text = "It will start the next time you sign in to Windows."
+		default:
+			text = "Autostart is off in config.yaml, so it wasn't started. Set autostart: true and run Setup again to start it now and at every sign-in."
 		}
 		if err != nil {
 			instruction = "Installing/updating failed"

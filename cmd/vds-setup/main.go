@@ -31,7 +31,7 @@ var version = "dev"
 var procAttachConsole = windows.NewLazySystemDLL("kernel32.dll").NewProc("AttachConsole")
 
 func main() {
-	mode := flag.String("mode", "", "skip the dialog and run this action directly: install (or background, the same) or uninstall")
+	mode := flag.String("mode", "", "skip the dialog and run this action directly: install or uninstall")
 	installDir := flag.String("install-dir", "", "directory to install into/remove from (default: %LOCALAPPDATA%\\VirtualDesktopShortcuts)")
 	noLaunch := flag.Bool("no-launch", false, "install/update, but don't start it now (install only)")
 	noAutostart := flag.Bool("no-autostart", false, "set autostart: false in config.yaml, so no Startup shortcut is added (install only)")
@@ -67,17 +67,18 @@ func main() {
 	opts.Progress = func(s string) { fmt.Println(s) }
 	var err error
 	switch strings.ToLower(*mode) {
-	case "install", "background": // this app is only ever a background service
+	case "install":
 		var tag string
-		if tag, err = setup.Install(opts); err == nil {
-			fmt.Printf("Installed %s.\n", tag)
+		var started bool
+		if tag, started, err = setup.Install(opts); err == nil {
+			fmt.Printf("Installed %s%s.\n", tag, map[bool]string{true: " and started it", false: " (not started)"}[started])
 		}
 	case "uninstall":
 		if err = setup.Uninstall(opts); err == nil {
 			fmt.Println("Uninstalled.")
 		}
 	default:
-		err = fmt.Errorf("unknown -mode %q (want install, background or uninstall)", *mode)
+		err = fmt.Errorf("unknown -mode %q (want install or uninstall)", *mode)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

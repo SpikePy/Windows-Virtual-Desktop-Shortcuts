@@ -30,10 +30,10 @@ Download `Setup_VirtualDesktopShortcuts.exe` from the
 [latest release](https://github.com/SpikePy/Windows-Virtual-Desktop-Shortcuts/releases/latest)
 and run it. It offers **Install/Update**, **Uninstall** and **Close**; if
 you don't click anything within 5 seconds, it installs on its own. Installing
-puts the app into `%LOCALAPPDATA%\VirtualDesktopShortcuts` and starts it.
-While the `autostart` setting is on (the default), the app keeps a
-shortcut to itself in your Startup folder, so it starts automatically when
-you sign in; turn the setting off and the shortcut is removed. Run Setup
+puts the app into `%LOCALAPPDATA%\VirtualDesktopShortcuts`. While the
+`autostart` setting is on (the default), Setup starts it right away and
+the app keeps a shortcut to itself in your Startup folder, so it starts
+whenever you sign in; turn the setting off and the shortcut is removed. Run Setup
 again any time to update to the newest release.
 
 Nothing here needs administrator rights, and nothing is installed for

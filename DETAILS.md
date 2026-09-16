@@ -191,8 +191,9 @@ buttons:
   into `%LOCALAPPDATA%\VirtualDesktopShortcuts`, adds a shortcut to your
   Startup folder (`FOLDERID_Startup`, written through the shell's
   `IShellLink`, exactly like dragging a program in there yourself) if
-  `config.yaml` says `autostart: true` - or removes it if not - and
-  starts it. It works the same whether or not the app is installed yet.
+  `config.yaml` says `autostart: true` - or removes it if not - and, only
+  while autostart is on, starts it. It works the same whether or not the
+  app is installed yet.
 - **Uninstall** removes the Startup shortcut, stops the running app and
   deletes the installed directory, `config.yaml` included.
 - **Close** changes nothing. Escape and the title-bar X do the same.
@@ -241,10 +242,10 @@ output to a file, when a script needs the result or the exit code.
 
 | Flag                 | Meaning                                                       |
 | -------------------- | ------------------------------------------------------------- |
-| `-mode install`      | Install or update without the dialog or countdowns (`-mode background` does the same) |
+| `-mode install`      | Install or update without the dialog or countdowns |
 | `-mode uninstall`    | Uninstall without the dialog or countdowns                     |
 | `-install-dir DIR`   | Use DIR instead of `%LOCALAPPDATA%\VirtualDesktopShortcuts`    |
-| `-no-launch`         | Install, but don't start it now (install only)                 |
+| `-no-launch`         | Install, but don't start it now even with autostart on (install only) |
 | `-no-autostart`      | Set `autostart: false` in `config.yaml`, so no Startup shortcut is added (install only) |
 | `-keep-files`        | Uninstall, but leave the installed files in place              |
 | `-github-token TOK`  | Ignored since v0.2.0 (no API calls any more); still accepted   |
